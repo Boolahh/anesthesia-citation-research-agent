@@ -299,6 +299,14 @@ def _plain_references(pages):
 
     for page in pages:
         lines = page_lines(page)
+        linked_rectangles = [
+            (fitz.Rect(link['from']), link.get('uri') or '')
+            for link in page.get_links() if (link.get('uri') or '').startswith(('http://','https://'))
+        ]
+        def link_for_line(box):
+            links = [url for rect, url in linked_rectangles
+                     if (rect & box).get_area() > .2 * min(rect.get_area(), box.get_area())]
+            return links[0] if links and len(set(links)) == 1 else ''
         # A section can span pages; the next section heading terminates it.
         for line in lines:
             text, rect = line['text'], line['box']
@@ -326,8 +334,15 @@ def _plain_references(pages):
             # for continuations, and always split explicit numbered entries.
             gap = rect.y0-current['_last_y0'] if current else 100
             same_indent = current and abs(rect.x0-current['_last_x0']) <= 14
+            line_url = link_for_line(rect)
+            # A 17pt gap can indicate a separate list entry when both lines
+            # are independently linked to *different* URLs, as in Claude's
+            # DAS page and NYSORA summary. Distinct link evidence wins over
+            # font-dependent line-spacing heuristics.
+            different_link = bool(current and current.get('_last_link_url')
+                                  and line_url and current['_last_link_url'] != line_url)
             continuation = bool(
-                current and not start and same_indent and
+                current and not start and same_indent and not different_link and
                 0 <= gap <= 17.4 and len(current['citation']) < 600)
             if continuation:
                 current['citation'] += ' ' + text
@@ -346,9 +361,11 @@ def _plain_references(pages):
             if current is not None:
                 current['_last_y0'] = rect.y0
                 current['_last_x0'] = rect.x0
+                if line_url:
+                    current['_last_link_url'] = line_url
     flush()
     for item in out:
-        for key in ('_last_y0','_last_x0','_explicit_section'):
+        for key in ('_last_y0','_last_x0','_last_link_url','_explicit_section'):
             item.pop(key, None)
     return out
 
