@@ -86,7 +86,7 @@ def result_zip(report_dir, workbook):
     with ZipFile(output, 'w', compression=ZIP_DEFLATED) as z:
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
-                     'research_proposals.json', 'citations_extracted.json'):
+                     'research_proposals.json', 'citations_extracted.json', 'research_audit.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -189,6 +189,7 @@ if submit:
                             'report': report, 'workbook': output.read_bytes(),
                             'run_report': (reports/'run_report.json').read_bytes(),
                             'citation_preview': preview, 'review_queue': review,
+                            'research_audit': (reports/'research_audit.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -207,7 +208,7 @@ if result:
     cols = st.columns(4)
     for i, (title, value) in enumerate((
         ('Citation candidates', report['citations_extracted']),
-        ('Sources checked', report['sources_researched']),
+        ('Research candidates', report['sources_researched']),
         ('Metadata found', report.get('sources_with_metadata', 0)),
         ('Review items', report.get('review_queue_items', report['warning_count'])),
     )):
@@ -227,6 +228,8 @@ if result:
             file_name='citation_preview.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download manual review queue (CSV)', result['review_queue'],
             file_name='review_queue.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download per-citation research audit (CSV)', result['research_audit'],
+            file_name='research_audit.csv', mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])

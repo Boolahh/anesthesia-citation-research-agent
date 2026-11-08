@@ -36,6 +36,7 @@ class TestDownloadPersistence(TestCase):
             output.write_bytes(b'filled-xlsx-for-testing')
             (reports / 'citation_preview.csv').write_text('question,source\nQ01,test\n')
             (reports / 'review_queue.csv').write_text('tool,question,reason\nCGP,Q01,example\n')
+            (reports / 'research_audit.csv').write_text('tool,question,research_status\nCGP,Q01,not_researched\n')
             (reports / 'run_report.json').write_text(json.dumps({
                 'citations_extracted': 1,
                 'sources_researched': 0,
@@ -58,15 +59,15 @@ class TestDownloadPersistence(TestCase):
                  patch('subprocess.run', side_effect=fake_process), \
                  patch.object(Path, 'read_bytes', read_bytes):
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 5)
+                self.assertEqual(st.download_button.call_count, 6)
                 self.assertEqual(len(ran), 1)
                 self.assertEqual(st.session_state['latest_result']['workbook'], b'filled-xlsx-for-testing')
                 # A click on a download button reruns the Streamlit app,
                 # but does not resubmit the form or delete its saved output.
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 10)
+                self.assertEqual(st.download_button.call_count, 12)
                 self.assertEqual(len(ran), 1)
-                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-5:]]
-                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv'])
+                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-6:]]
+                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv'])
         finally:
             sys.path.remove(str(ROOT))
