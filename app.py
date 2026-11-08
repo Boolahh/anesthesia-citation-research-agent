@@ -45,6 +45,8 @@ with st.form('agent_form'):
     submit=st.form_submit_button('Run extraction',type='primary',use_container_width=True)
 
 if submit:
+    # Clear any previous result so a failed run never shows stale downloads.
+    st.session_state.pop('latest_result', None)
     if not uploads:
         st.error('Upload at least one PDF first.')
     else:
@@ -75,27 +77,47 @@ if submit:
                         st.code(proc.stdout[-8000:])
                     else:
                         report=json.loads((reports/'run_report.json').read_text(encoding='utf-8'))
-                        st.success('Workbook created. Source facts still require human review.')
-                        st.metric('Citations extracted',report['citations_extracted'])
-                        st.metric('Sources researched',report['sources_researched'])
-                        st.metric('Review warnings',report['warning_count'])
-                        st.download_button('Download filled Excel workbook',output.read_bytes(),
-                                file_name='citation_extraction_filled.xlsx',
-                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                use_container_width=True)
-                        st.download_button('Download run report (JSON)',(reports/'run_report.json').read_bytes(),
-                                file_name='run_report.json',mime='application/json',use_container_width=True)
-                        st.download_button('Download citation preview (CSV)',(reports/'citation_preview.csv').read_bytes(),
-                                file_name='citation_preview.csv',mime='text/csv',use_container_width=True)
-                        with st.expander('Processing log'):
-                            st.code(proc.stdout[-12000:])
-                        if report['warning_count']:
-                            with st.expander('Warnings requiring manual review'):
-                                st.json(report['warnings'][:100])
+                        # TemporaryDirectory is deleted when this run ends. Copy all
+                        # download data into the browser session before leaving it.
+                        st.session_state['latest_result'] = {
+                            'report': report,
+                            'workbook': output.read_bytes(),
+                            'run_report': (reports/'run_report.json').read_bytes(),
+                            'citation_preview': (reports/'citation_preview.csv').read_bytes(),
+                            'log': proc.stdout[-12000:],
+                        }
             except subprocess.TimeoutExpired:
                 st.error('The process exceeded the local UI timeout. Run the CLI to resume research in batches.')
             except Exception as exc:
                 st.error(type(exc).__name__+': '+str(exc))
+
+# Download buttons normally trigger a Streamlit script rerun. Render from
+# session state (outside `if submit`) so the other downloads remain visible.
+result = st.session_state.get('latest_result')
+if result is not None:
+    report = result['report']
+    st.subheader('Latest extraction results')
+    st.success('Workbook created. Source facts still require human review.')
+    st.caption('All three downloads stay available in this browser session. A full page reload or closing the tab clears the session.')
+    stat_cols = st.columns(3)
+    stat_cols[0].metric('Citations extracted', report['citations_extracted'])
+    stat_cols[1].metric('Sources researched', report['sources_researched'])
+    stat_cols[2].metric('Review warnings', report['warning_count'])
+    st.download_button('Download filled Excel workbook', result['workbook'],
+            file_name='citation_extraction_filled.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            use_container_width=True)
+    st.download_button('Download run report (JSON)', result['run_report'],
+            file_name='run_report.json', mime='application/json',
+            use_container_width=True)
+    st.download_button('Download citation preview (CSV)', result['citation_preview'],
+            file_name='citation_preview.csv', mime='text/csv',
+            use_container_width=True)
+    with st.expander('Processing log'):
+        st.code(result['log'])
+    if report['warning_count']:
+        with st.expander('Warnings requiring manual review'):
+            st.json(report['warnings'][:100])
 
 st.divider()
 st.caption('Human reviewers own the verdict columns, gender/race fields, and final validation. No system can safely infer a citation is real merely because a link opens.')
