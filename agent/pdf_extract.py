@@ -197,25 +197,41 @@ def extract_links(pages):
                 0 if not (ln['box'] & rect).is_empty else 1,
                 abs(ln['box'].y0 - rect.y0)))
             return found['text']
+        # URL equality does not mean one citation: Claude can print two
+        # identical linked domain badges alongside each other on one line.
+        # Conversely, a reference-list entry can wrap onto the next line
+        # and produce two URI annotation rectangles for *one* citation.
+        def linked_words(rect):
+            words = page.get_text('words')
+            return flatten_text(' '.join(
+                word[4] for word in words if
+                (fitz.Rect(word[:4]) & rect).get_area() >=
+                .20 * max(fitz.Rect(word[:4]).get_area(), 1)))
         for uri, rects in by_url.items():
             clusters = []
             for rect in sorted(rects, key=lambda x: (x.y0, x.x0)):
                 if clusters:
                     prior = clusters[-1][-1]
-                    prev_label = line_near(prior)
-                    current_label = line_near(rect)
-                    # A single clickable citation can span lines and have
-                    # multiple URI annotations. But consecutive numbered
-                    # references to the *same URL* are separate occurrences,
-                    # essential for the study's repeat-in-answer coding.
-                    different_line = abs(rect.y0 - prior.y0) > 6
-                    new_citation = different_line and (
-                        bool(LIST_START.match(current_label)) or
-                        (normalize(current_label) == normalize(prev_label) and
-                         len(normalize(current_label)) > 18))
-                    if rect.y0 - prior.y0 < 27 and not new_citation:
-                        clusters[-1].append(rect)
+                    if (abs(rect.y0-prior.y0) < 1
+                            and (rect & prior).get_area() >=
+                            .85*min(rect.get_area(), prior.get_area())):
+                        # Exact overlapping duplicate PDF annotations are
+                        # rendering artifacts, not independent source badges.
                         continue
+                    if (rect.y0 > prior.y0 + 6
+                            and 0 <= rect.y0-prior.y1 <= 4
+                            and abs(rect.x0-prior.x0) < 12
+                            and _section_for_position(lines, prior.y0, carry_section) == 'cited'):
+                        prev_text = linked_words(prior)
+                        current_text = linked_words(rect)
+                        # A second linked line is a continuation only when it
+                        # isn't a new numbered reference or generic badge.
+                        if (len(prev_text) >= 30 and len(current_text) >= 8
+                                and not LIST_START.match(line_near(rect))
+                                and prev_text.lower() not in GENERIC_LINKS
+                                and current_text.lower() not in GENERIC_LINKS):
+                            clusters[-1].append(rect)
+                            continue
                 clusters.append([rect])
             for cluster in clusters:
                 rect = cluster[0]
@@ -260,7 +276,12 @@ def _plausible_reference(text):
 
 
 def _plain_references(pages):
-    """Find actual reference entries without PDF annotations, not generic narrative claims."""
+    """Split numbered and unnumbered bibliography entries with PDF line geometry.
+
+    Claude often lists separate unnumbered sources 18-20pt apart and wraps
+    individual titles 14-16pt apart. A continuous 33pt proximity rule merged
+    entire source lists, silently losing unlinked references like MYRIAD.
+    """
     out = []
     in_reference = False
     in_unused = False
@@ -268,7 +289,11 @@ def _plain_references(pages):
 
     def flush():
         nonlocal current
-        if current is not None and _plausible_reference(current['citation']):
+        if current is not None and (
+                _plausible_reference(current['citation']) or
+                (current.get('_explicit_section') and
+                 len(current['citation']) >= 20 and
+                 not current['citation'].startswith(('\ue056', '\ue06c')))):
             out.append(current)
         current = None
 
@@ -289,34 +314,42 @@ def _plain_references(pages):
                 flush(); in_reference = False
                 continue
             if not in_reference:
-                # Explicit DOI/PMID/URL printed anywhere may be a source, but no
-                # stray URL should be treated as a full reference without context.
+                continue
+            # Do not accidentally turn Claude's export toolbar into a source.
+            if text.startswith(('\ue056','\ue06c','\ue0e4')) or 'Create a doc' in text:
+                flush(); in_reference = False
                 continue
             start = LIST_START.match(text)
-            if start:
+            raw = start.group(4) if start else text
+            # A bibliography's separate unnumbered entries have a larger
+            # baseline gap than a wrapped title. Require consistent indentation
+            # for continuations, and always split explicit numbered entries.
+            gap = rect.y0-current['_last_y0'] if current else 100
+            same_indent = current and abs(rect.x0-current['_last_x0']) <= 14
+            continuation = bool(
+                current and not start and same_indent and
+                0 <= gap <= 17.4 and len(current['citation']) < 600)
+            if continuation:
+                current['citation'] += ' ' + text
+                if not current['url']:
+                    current['url'] = _visible_url(text)
+            else:
                 flush()
-                raw = start.group(4)
+                if len(raw) < 12 and not _plausible_reference(raw):
+                    continue
                 current = {'page': page.number+1, 'x': rect.x0, 'y': rect.y0,
                            'citation': raw, 'url': _visible_url(raw),
                            'kind': 'plain_reference', 'confidence': 'medium',
-                           'evidence': {'page': page.number+1, 'reference_label': text[:55]}}
-            elif current and (rect.y0-current.get('_last_y', rect.y1) < 33) and len(current['citation']) < 500:
-                # Continuation of a wrapped reference or title on the next line.
-                if text.lower() not in GENERIC_LINKS and not REF_HEADER.match(text):
-                    current['citation'] += ' ' + text
-                    if not current['url']:
-                        current['url'] = _visible_url(text)
-            elif _plausible_reference(text):
-                flush()
-                current = {'page': page.number+1, 'x': rect.x0, 'y': rect.y0,
-                           'citation': text, 'url': _visible_url(text),
-                           'kind': 'plain_reference', 'confidence': 'medium',
-                           'evidence': {'page': page.number+1, 'reference_label': text[:55]}}
+                           '_explicit_section': True,
+                           'evidence': {'page': page.number+1,
+                                        'reference_label': text[:55]}}
             if current is not None:
-                current['_last_y'] = rect.y1
+                current['_last_y0'] = rect.y0
+                current['_last_x0'] = rect.x0
     flush()
-    for c in out:
-        c.pop('_last_y', None)
+    for item in out:
+        for key in ('_last_y0','_last_x0','_explicit_section'):
+            item.pop(key, None)
     return out
 
 
