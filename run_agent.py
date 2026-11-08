@@ -284,6 +284,85 @@ def _review_rows(rows, proposals, warnings):
     return queue
 
 
+GEOGRAPHY_REVIEW_FIELDS = [
+    'tool', 'question', 'citation_order', 'excel_row', 'original_citation',
+    'original_url', 'research_status', 'publication_title', 'source_type',
+    'first_author', 'first_author_affiliation', 'first_author_country',
+    'first_author_who_region', 'first_author_income',
+    'first_country_evidence_source', 'first_country_evidence_url',
+    'first_country_evidence_reason', 'last_author', 'last_author_country',
+    'last_country_evidence_source', 'review_priority', 'review_action',
+    'source_review_flags',
+]
+
+
+def _geography_review(rows, proposals, workbook):
+    """One provenance-linked review decision per original citation.
+
+    This audit does not invent an author, infer country from an institution
+    name, or treat OpenAlex's publication-specific country as final verified
+    author geography. Review decisions stay outside the original workbook.
+    """
+    indexed = {(p['tool'], p['question'], int(p['order'])): p for p in proposals}
+    output = []
+    for citation in rows:
+        key = (citation['tool'], citation['question'], int(citation['order']))
+        rownum = workbook.existing.get(key)
+        if rownum is None:
+            continue
+        data = workbook.get_row(rownum)
+        proposal = indexed.get(key, {})
+        provenance = proposal.get('field_provenance') or {}
+        first = provenance.get('AN') or {}
+        last = provenance.get('AS') or {}
+        country = data.get('AN') or 'NR'
+        author = data.get('AL') or 'NR'
+        source_type = data.get('AD') or 'NR'
+        has_country = country not in ('', 'NR', 'NOT FOUND', None)
+        if not has_country and author in ('NR', 'NOT FOUND', '') and source_type in (
+                'Professional society or organization webpage',
+                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)'):
+            priority = 'Applicability review'
+            action = 'Determine whether a named first author and author geography apply to this source'
+        elif not has_country:
+            priority = 'High - primary outcome missing'
+            action = 'Locate the actual first-author affiliation, confirm country and WHO region'
+        elif 'OpenAlex' in first.get('source', ''):
+            priority = 'High - verify OpenAlex inference'
+            action = 'Verify this author-specific country against the publication, not institution order'
+        elif first.get('source'):
+            priority = 'Review - verify source evidence'
+            action = 'Confirm source affiliation and WHO-region coding against the original publication'
+        else:
+            priority = 'High - provenance missing'
+            action = 'Confirm first-author country and obtain supporting evidence before accepting it'
+        output.append({
+            'tool': key[0], 'question': key[1], 'citation_order': key[2],
+            'excel_row': rownum,
+            'original_citation': citation.get('citation', ''),
+            'original_url': citation.get('url', ''),
+            'research_status': ('written_provisional' if proposal.get('written_to_workbook')
+                                else 'not_written' if proposal else 'not_researched'),
+            'publication_title': data.get('Z', ''),
+            'source_type': source_type,
+            'first_author': author,
+            'first_author_affiliation': data.get('AM', ''),
+            'first_author_country': country,
+            'first_author_who_region': data.get('AO', ''),
+            'first_author_income': data.get('AP', ''),
+            'first_country_evidence_source': first.get('source', ''),
+            'first_country_evidence_url': first.get('url', ''),
+            'first_country_evidence_reason': first.get('reason', ''),
+            'last_author': data.get('AQ', ''),
+            'last_author_country': data.get('AS', ''),
+            'last_country_evidence_source': last.get('source', ''),
+            'review_priority': priority,
+            'review_action': action,
+            'source_review_flags': '; '.join(str(f) for f in proposal.get('review_flags', [])),
+        })
+    return output
+
+
 RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
@@ -496,6 +575,8 @@ def main(argv=None):
     output = wb.save(args.output)
     audit = _research_audit(rows, research)
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
+    geography = _geography_review(rows, research, wb)
+    write_csv(report_dir/'geography_review.csv', geography, GEOGRAPHY_REVIEW_FIELDS)
     queue = _review_rows(rows, research, warnings)
     write_csv(report_dir/'review_queue.csv', queue,
         ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
@@ -526,6 +607,9 @@ def main(argv=None):
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
         'informative_green_cells_in_output_workbook': informative_output_cells,
+        'geography_review_rows': len(geography),
+        'geography_review_high_priority': sum(
+            item['review_priority'].startswith('High') for item in geography),
         'first_author_country_rows': sum(
             wb.get_row(rownum).get('AN') not in ('', 'NR', 'NOT FOUND', None)
             for rownum in wb.existing.values()),

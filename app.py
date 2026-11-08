@@ -86,7 +86,8 @@ def result_zip(report_dir, workbook):
     with ZipFile(output, 'w', compression=ZIP_DEFLATED) as z:
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
-                     'research_proposals.json', 'citations_extracted.json', 'research_audit.csv'):
+                     'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
+                     'geography_review.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -193,6 +194,7 @@ if submit:
                             'run_report': (reports/'run_report.json').read_bytes(),
                             'citation_preview': preview, 'review_queue': review,
                             'research_audit': (reports/'research_audit.csv').read_bytes(),
+                            'geography_review': (reports/'geography_review.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -255,6 +257,8 @@ if result:
             file_name='review_queue.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download per-citation research audit (CSV)', result['research_audit'],
             file_name='research_audit.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download first-author geography review (CSV)', result['geography_review'],
+            file_name='geography_review.csv', mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])
