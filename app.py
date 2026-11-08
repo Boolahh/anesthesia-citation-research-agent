@@ -205,14 +205,16 @@ if result:
     st.subheader('Latest run — results and review')
     st.success('The output is ready. Green fields are provisional until independently checked by a human reviewer.')
     st.caption('All downloads stay available after each click. Closing/reloading the browser tab can clear this temporary session.')
-    cols = st.columns(4)
+    cols = st.columns(5)
     for i, (title, value) in enumerate((
         ('Citation candidates', report['citations_extracted']),
         ('Research candidates', report['sources_researched']),
         ('Metadata found', report.get('sources_with_metadata', 0)),
+        ('Green values in workbook', report.get('informative_green_cells_in_output_workbook', 0)),
         ('Review items', report.get('review_queue_items', report['warning_count'])),
     )):
         cols[i].metric(title, value)
+    st.caption('Green values counts substantive cell contents, not NR / NOT FOUND placeholders. All research values remain provisional until reviewed.')
     st.download_button('Download full evidence package (ZIP)', result['package'],
         file_name='anesthesia_citation_research_package.zip', mime='application/zip',
         use_container_width=True)
