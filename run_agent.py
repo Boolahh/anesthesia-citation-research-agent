@@ -344,6 +344,30 @@ def _original_rows(workbook):
     return result
 
 
+def research_candidate(item, wb):
+    """Resolve a source for research, including reviewer-verified column X.
+
+    A citation with no original URL/DOI and a short title must still be
+    researchable if a human reviewer provides a verified link in column X.
+    The as-cited blue fields remain immutable.
+    """
+    key = (item['tool'], item['question'], int(item['order']))
+    rownum = wb.existing.get(key)
+    if rownum is None:
+        return None, item, False
+    reviewed = wb.get_row(rownum).get('X', '')
+    if reviewed not in ('', 'NR', 'NOT FOUND', None):
+        source = {**item, 'url': reviewed, 'source_url_verified': True}
+    else:
+        source = item
+    has_identifier = any(source.get(k) not in ('', 'NR', 'NOT FOUND', None)
+                         for k in ('url', 'doi', 'pmid'))
+    title = str(source.get('title') or '')
+    searchable_title = (len(re.findall(r'[A-Za-z]{3,}', title)) >= 7
+                        and 25 <= len(title) <= 240)
+    return rownum, source, (has_identifier or searchable_title)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='AI citation evidence pipeline: original PDFs to research workbook')
     ap.add_argument('command', choices=['scan', 'run'])
@@ -402,34 +426,28 @@ def main(argv=None):
                 warnings.append({'tool': tool, 'question': question,
                                  'warning': 'Zero citations extracted; manually confirm the conversation'})
     research = []
+    researchable_count = 0
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline)
         journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
+        # Compute eligibility *after* considering column X, so reports can
+        # distinguish skipped citations from those left out by the research cap.
+        researchable_count = sum(research_candidate(item, wb)[2] for item in rows)
         attempts = 0
         for item in rows:
             if args.max_sources and attempts >= args.max_sources:
                 break
             key = (item['tool'], item['question'], int(item['order']))
-            rownum = wb.existing.get(key)
+            rownum, lookup_item, eligible = research_candidate(item, wb)
             if rownum is None:
                 continue
-            has_identifier = any(item.get(k) not in ('', 'NR', None) for k in ('url','doi','pmid'))
-            # Permit a constrained title lookup if there is no URL/ID. Original blue
-            # fields remain unchanged, and results require human confirmation.
-            title = item.get('title', '')
-            title_candidate = len(re.findall(r'[A-Za-z]{3,}', title)) >= 7 and 25 <= len(title) <= 240
-            if not has_identifier and not title_candidate:
+            if not eligible:
                 warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
                                  'warning': 'No source identifier and insufficient title; research skipped'})
                 continue
             attempts += 1
             record = {'tool': key[0], 'question': key[1], 'order': key[2], 'row': rownum}
-            # A previously reviewed workbook can also be used in combined mode.
-            # Research from its human verified X link; do not mutate blue E/J.
-            reviewed = wb.get_row(rownum).get('X', '')
-            lookup_item = ({**item, 'url': reviewed, 'source_url_verified': True}
-                           if reviewed not in ('', 'NR', 'NOT FOUND') else item)
             try:
                 info = enrich(lookup_item, wb, bibliography, ai, journal_database)
                 record.update(info)
@@ -478,8 +496,16 @@ def main(argv=None):
         'input_documents': documents, 'citations_extracted': len(rows),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
         'sources_researched': len(research),  # candidates evaluated; may run fully offline
+        'eligible_sources_for_research': researchable_count,
+        'publication_lookup_limit': args.max_sources,  # 0 = all
+        'eligible_sources_not_researched': max(0, researchable_count - len(research)),
+        'research_truncated_by_limit': bool(args.max_sources and
+                                            researchable_count > len(research)),
         'external_lookup_successes': sum(
             sum(event.get('status') == 'ok' for event in item.get('lookup_events', []))
+            for item in research),  # fresh network responses; backward compatible
+        'cached_lookup_reuses': sum(
+            sum(event.get('status') == 'cache_hit' for event in item.get('lookup_events', []))
             for item in research),
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),

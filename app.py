@@ -132,7 +132,10 @@ with st.form('agent_form'):
         offline = st.checkbox('Offline: no web / API requests', value=False)
         no_ai = st.checkbox('Do not use paid AI API', value=True)
         max_sources = st.number_input('Maximum publication research lookups (0 = all)',
-                                      min_value=0, max_value=3500, value=10)
+                                      min_value=0, max_value=3500, value=10,
+                                      help='10 (default) attempts only the first 10 eligible citations. '
+                                           'Set 0 to research every eligible citation in the uploaded documents.')
+        st.caption('Research limit defaults to 10 for a small pilot. **Set it to 0 for all citations.**')
         api_key = st.text_input('OpenAI API key (optional, local session)', type='password',
              help='Never paste your API key into chat; the local process reads it only in memory.')
     submit = st.form_submit_button('Run study extraction', type='primary', use_container_width=True)
@@ -215,6 +218,19 @@ if result:
     )):
         cols[i].metric(title, value)
     st.caption('Green values counts substantive cell contents, not NR / NOT FOUND placeholders. All research values remain provisional until reviewed.')
+    if report.get('research_truncated_by_limit'):
+        st.warning(
+            f"Research stopped at your limit of {report.get('publication_lookup_limit')}. "
+            f"Only {report['sources_researched']} of {report['eligible_sources_for_research']} "
+            f"eligible citations were attempted. Set Maximum publication research lookups to **0** "
+            f"and rerun to research all eligible citations."
+        )
+    if report.get('sources_researched'):
+        st.caption(
+            f"Bibliographic lookup results: {report.get('external_lookup_successes', 0)} "
+            f"fresh network successes, {report.get('cached_lookup_reuses', 0)} "
+            f"local-cache reuses. Reused metadata is not freshly verified."
+        )
     st.download_button('Download full evidence package (ZIP)', result['package'],
         file_name='anesthesia_citation_research_package.zip', mime='application/zip',
         use_container_width=True)

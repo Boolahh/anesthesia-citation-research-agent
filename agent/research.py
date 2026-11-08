@@ -256,7 +256,12 @@ class Bibliography:
         if path.exists():
             try:
                 result = path.read_text(encoding='utf-8')
-                return json.loads(result) if accept == 'application/json' else result
+                data = json.loads(result) if accept == 'application/json' else result
+                # The previous report showed '0 external lookup successes' even
+                # when many sources were resolved successfully from local cache.
+                # Audit cache reuse separately from a fresh network response.
+                self.events.append({'url': url, 'status': 'cache_hit'})
+                return data
             except (ValueError, OSError):
                 pass
         if self.offline:
