@@ -51,7 +51,8 @@ class ClaudeReferenceBoundaryTests(TestCase):
             rows,warnings=parse_pdf(path,'CLG',self.book.data.questions)
             self.assertEqual(len(rows),3, (rows,warnings))
             self.assertTrue(any('Landoni' in r['citation']
-                                and r['url']=='NR' for r in rows))
+                                and r['url']=='NR' and
+                                r.get('source_context')=='bibliography' for r in rows))
 
     def test_two_same_line_nysora_badges_are_two_link_occurrences(self):
         with TemporaryDirectory() as folder:
@@ -71,6 +72,7 @@ class ClaudeReferenceBoundaryTests(TestCase):
             rows,warnings=parse_pdf(path,'CLG',self.book.data.questions)
             self.assertEqual(len(rows),2, (rows,warnings))
             self.assertEqual(rows[1]['repeat'],'Y')
+            self.assertEqual(rows[0]['source_context'],'inline_link')
 
     def test_neighboring_unnumbered_sources_with_distinct_links_not_merged(self):
         with TemporaryDirectory() as folder:

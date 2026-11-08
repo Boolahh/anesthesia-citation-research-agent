@@ -301,7 +301,7 @@ def _review_rows(rows, proposals, warnings):
 
 SOURCE_QUALITY_FIELDS = [
     'tool','question','citation_order','source_file','pdf_page',
-    'original_citation','original_url','source_identity',
+    'original_citation','original_url','source_identity','source_context',
     'occurrences_of_source_in_question','short_or_generic_label',
     'extraction_confidence','repeat_occurrence','review_priority','review_reason',
 ]
@@ -330,6 +330,7 @@ def _source_quality_review(rows):
             'citation_order': item['order'], 'source_file': item.get('source_file',''),
             'pdf_page': item.get('source_page',''), 'original_citation': item['citation'],
             'original_url': item.get('url',''), 'source_identity': ident,
+            'source_context': item.get('source_context','unclassified'),
             'occurrences_of_source_in_question': num,
             'short_or_generic_label': 'Y' if weak else 'N',
             'extraction_confidence': item.get('extraction_confidence',''),
@@ -550,7 +551,8 @@ def main(argv=None):
     write_json(report_dir/'citations_extracted.json', rows)
     write_csv(report_dir/'citation_preview.csv', rows,
         ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
-         'source_file','source_page','extraction_method','extraction_confidence','pdf_sha256'])
+         'source_file','source_page','extraction_method','extraction_confidence',
+         'source_context','pdf_sha256'])
     source_review = _source_quality_review(rows)
     write_csv(report_dir/'source_quality_review.csv', source_review, SOURCE_QUALITY_FIELDS)
     if args.command == 'scan':
@@ -664,6 +666,10 @@ def main(argv=None):
         'distinct_sources_within_questions': len({
             (item['tool'],item['question'],citation_identity(item)) for item in rows}),
         'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
+        'explicit_bibliography_occurrences': sum(
+            item.get('source_context') == 'bibliography' for item in rows),
+        'in_text_link_occurrences': sum(
+            item.get('source_context') == 'inline_link' for item in rows),
         'short_or_generic_source_labels': sum(
             item['short_or_generic_label'] == 'Y' for item in source_review),
         'high_priority_source_quality_rows': sum(

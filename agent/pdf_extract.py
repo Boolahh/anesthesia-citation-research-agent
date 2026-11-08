@@ -235,7 +235,8 @@ def extract_links(pages):
                 clusters.append([rect])
             for cluster in clusters:
                 rect = cluster[0]
-                if _section_for_position(lines, rect.y0, carry_section) == 'unused':
+                section = _section_for_position(lines, rect.y0, carry_section)
+                if section == 'unused':
                     continue
                 label = text_for_link(page, lines, cluster)
                 groups.append({'page': page.number + 1, 'y': rect.y0,
@@ -244,7 +245,9 @@ def extract_links(pages):
                                'kind': 'pdf_link',
                                'confidence': ('review' if weak_visible_citation_label(label, uri)
                                               else 'high'),
-                               'evidence': {'page': page.number+1, 'uri_annotation': uri}})
+                               'evidence': {'page': page.number+1, 'uri_annotation': uri,
+                                            'section': ('bibliography' if section == 'cited'
+                                                        else 'inline_link')}})
         if lines:
             carry_section = _section_for_position(lines, lines[-1]['box'].y1, carry_section)
     return sorted(groups, key=lambda x: (x['page'], x['y'], x['x']))
@@ -357,7 +360,8 @@ def _plain_references(pages):
                            'kind': 'plain_reference', 'confidence': 'medium',
                            '_explicit_section': True,
                            'evidence': {'page': page.number+1,
-                                        'reference_label': text[:55]}}
+                                        'reference_label': text[:55],
+                                        'section': 'bibliography'}
             if current is not None:
                 current['_last_y0'] = rect.y0
                 current['_last_x0'] = rect.x0
@@ -421,6 +425,8 @@ def _parse_pages(pages, tool, question, path, api=None):
                 best['citation'] = ref['citation']
             if not best.get('url') and ref.get('url'):
                 best['url'] = ref['url']
+            if best.get('evidence') is not None:
+                best['evidence']['section'] = 'bibliography'
             continue
         found.append(ref)
     found.sort(key=lambda x: (x['page'], x['y'], x['x']))
@@ -470,6 +476,9 @@ def _parse_pages(pages, tool, question, path, api=None):
                         'source_file': path.name, 'source_page': entry.get('page', 0),
                         'extraction_method': entry.get('kind', 'unknown'),
                         'extraction_confidence': entry.get('confidence', 'review'),
+                        'source_context': (entry.get('evidence') or {}).get(
+                            'section', 'named_source_mention' if entry.get('kind') == 'explicit_named'
+                            else 'unclassified'),
                         'evidence': entry.get('evidence') or {'page': entry.get('page', 0)}})
     return results, warnings
 
