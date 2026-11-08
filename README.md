@@ -1,92 +1,99 @@
-# Anesthesia Citation Bias Extraction Agent
+# Anesthesia Citation Research Agent
 
-A working, local Python research automation package for the supplied **AI Citation Bias in Anesthesia** extraction template. It accepts exported AI-chat PDFs with their original hyperlinks, extracts citations into columns **A–L**, looks up bibliographic records from public databases, optionally uses an LLM to code research metadata into columns **Z–BF**, and leaves reviewer-only columns alone.
+**Research-grade, reviewer-supervised extraction pipeline for the original AI-mediated anesthesia evidence study.** Ingest exported AI conversations as PDFs (or ZIPs of PDFs), preserve *as-cited* references and hyperlinks, research actual source records, write the exact original 70+ column study workbook, and generate evidence and manual-review artifacts. Runs locally on Windows, macOS or Linux.
 
-**This is a research data-entry agent, not a clinical decision tool. Every AI-coded fact requires human review, as specified in the study protocol.** It deliberately does **not** mark any citation as real, hallucinated, or accurate automatically.
+**Important:** This is a scientific data-extraction assistant—not a clinical decision tool, plagiarism verifier, or proof that an AI citation exists. A human reviewer must verify every claim used in study analysis. No agent can recover a reference hidden by the AI provider's interface or missing from the PDF with certainty.
 
-## Contents
+## Supported AI platforms (the exact 16 study tool codes)
 
-- `run_agent.py` — batch processing CLI (no browser accounts required)
-- `app.py` — optional local web interface to upload one or more PDFs, choose an AI tool, and download Excel
-- `agent/pdf_extract.py` — PDF hyperlink/citation extraction and original-reference handling
-- `agent/research.py` — public Crossref, OpenAlex, Europe PMC, and accessible webpage metadata extraction
-- `agent/llm.py` — optional OpenAI structured-JSON citation extraction / research coding
-- `agent/workbook.py` — surgical edits to the original template, preserving all other sheets and formulas
-- `inputs/<TOOL_CODE>/` — **local-only** original AI conversation exports (not included in the GitHub repository)
-- `template/` — the original blank workbook stored losslessly as `.xlsx.gz`, expanded automatically on first use
-- `outputs/` — generated workbooks, CSV previews, and audit JSON reports (**local-only**, ignored by Git)
-- `tests/` — automated validation tests
+| Study code | Platform | Study code | Platform |
+|---|---|---|---|
+| CGP | ChatGPT | CGC | ChatGPT for Clinicians |
+| CLG | Claude | CKA | ClinicalKey AI |
+| CON | Consensus | DSK | DeepSeek |
+| DOX | Doximity Ask | DRI | DR. INFO |
+| DYN | Dyna AI (DynaMed) | GLA | Glass Health |
+| GEM | Google Gemini | HEI | Heidi Evidence |
+| COP | Microsoft Copilot | OEV | OpenEvidence |
+| UTD | UpToDate Expert AI | VER | Vera Health |
 
-## Windows quick start (local upload interface)
+The 12 standardized questions and 16 platform definitions are read *directly* from the original study workbook, not duplicated in code. The extraction engine supports original PDF hyperlinks, printed URLs/DOIs/PMIDs, numbered and bulleted references, multi-page responses, and optional evidence-constrained AI transcription. Unknown layouts or hidden sources are flagged for a human rather than silently guessed. **Only the ChatGPT sample export format supplied to this project has been tested end-to-end; each other platform needs a pilot QA check before research-scale use.**
 
-1. Clone or download this GitHub repository. Install Python 3.11+ from python.org, enabling **Add Python to PATH**. The exact blank workbook is included in `.xlsx.gz` form and expands automatically on first use.
-2. Double-click `run_windows.bat`. It creates a virtual environment, installs the requirements, and starts the local Streamlit interface in a browser.
-3. Choose the model that produced the answers (e.g. ChatGPT / `CGP`). Upload one or more original chat PDFs; you may upload **one combined PDF containing Q1–Q12** if each question starts on a new page, or 12 separate PDFs.
-4. Choose **Citation copying only** to create the blue data first. After a human reviewer checks the original citations, marks column **U** with an actual real-source verdict, and provides **X** where appropriate, upload that reviewed workbook and use **Source research only**. No login details are needed.
-5. Download the generated `.xlsx` and inspect the warning report before using it for analysis.
+## Windows quick start (VS Code or Git Bash)
 
-For a small accelerated demonstration, select **Copying + source research** and **Provisional** to populate unverified green proposals in addition to the blue cells. The human reviewer must still verify them; proposals are **not** classified as real by the agent.
+1. Clone the private repository and install **Python 3.11+**.
+2. Run `run_windows.bat` from File Explorer or `./run_windows.bat` from Git Bash. It creates `.venv`, installs packages and starts Streamlit, usually at `http://localhost:8501`.
+3. Upload PDFs for one platform; choose its tool code. For **multiple platforms in one batch**, choose **Auto-detect** and upload a ZIP containing folders named `CGP/`, `OEV/`, `GEM/`, etc. (or name each PDF with its platform).
+4. Select **Copy original citations (blue)** for the first quality-control pass, turn **Offline** on, and keep **No paid AI** selected. Use the review queue and citation preview to check every original source occurrence.
+5. Select **Copy + research (green)** to independently look up bibliographic sources. By default **verified-only** does *not* fill green columns without an actual reviewer verdict in U. To test candidate green metadata before verification, select **provisional** and later verify every populated field.
+6. Download the **Complete evidence package ZIP** for the XLSX, CSV citation preview, review queue, reports and field-level metadata provenance. Each individual download also stays available within the same browser session.
+7. A collaborator can review the original reference and fill T–Y, BG–BR in Excel, or use the optional validated reviewer CSV workflow below. Then run research-only with the reviewed workbook, without needing the original PDFs again.
 
-### Optional AI API key
+### macOS and Linux
 
-Copy `.env.example` to `.env` and set `OPENAI_API_KEY=...` locally, or enter a key in the local upload interface. **Never paste keys or account passwords into a chat.** The key is optional for the PDF/citation-copying phase. Without a key, research coding still attempts public structured metadata from the cited sources, but many complex green fields remain `NR` or `NOT FOUND`.
+Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
-This tool uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/structured-outputs) for optional structured JSON extraction. Model name can be changed using `OPENAI_MODEL`.
+## What exactly gets written
 
-## Command-line use (PowerShell; every command is a single line)
+- **A–L (blue):** the citation as displayed, original link as displayed, original title/author/year/journal/DOI/PMID and whether the reference was repeated. Links in this area are never replaced by a publisher URL found later.
+- **M–Y (human only):** tool metadata, human source-verdict in U, reference error category, independently verified URL in X and audit status; never inferred by the agent.
+- **Z–BF (green):** *proposed* real-source bibliographic fields, using DOI/PMID, PubMed EFetch, Europe PMC, Crossref, OpenAlex and public publisher metadata. Includes field-level source URLs in `research_proposals.json`. The agent does not accept a database lookup as proof that a citation is correct.
+- **BG–BR (human only):** gender, race/ethnicity, checking the proposed green fields, and reviewer notes; never inferred or overwritten by the agent.
+- Other workbook sheets/formulas/styles/dropdowns are maintained by narrowly editing only the `Data_Extraction` and `Query_Log` worksheet XML.
 
-Run from the unzipped project folder after starting the virtual environment (`.venv\Scripts\Activate.ps1`):
+### Affiliation safeguards
+
+The system now reads PubMed XML **author by author**. It refuses to assign an institution to an author just because another author lists it, and refuses to pick the "most recent" institution from several affiliations when chronology is unknown. OpenAlex affiliations are retained as possible research clues but **are not automatically used** for the first, last or corresponding author's recorded institution or country. Journal country is not substituted with publisher headquarters. The official issue year is preferred over online-first year when PubMed supplies both, with this choice documented in provenance.
+
+### Unavailable or licensed research fields
+
+Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
+
+## CLI reference (one-line commands from the project root)
 
 ```powershell
-python -m pip install -r requirements.txt
-python run_agent.py scan --no-ai
-python run_agent.py run --stage blue --no-ai --offline
-python run_agent.py run --stage all --max-sources 10 --green-policy provisional
-python run_agent.py run --stage research --template outputs/citation_extraction_filled.xlsx --output outputs/after_human_verification.xlsx --green-policy verified-only
+python -m pip install -r requirements-ui.txt
 python -m unittest discover -s tests -v
+python run_agent.py scan --input inputs --no-ai --offline
+python run_agent.py run --stage blue --input inputs --output outputs/blue.xlsx --no-ai --offline
+python run_agent.py run --stage all --input inputs --output outputs/provisional.xlsx --max-sources 10 --green-policy provisional --no-ai
+python run_agent.py run --stage research --template outputs/reviewed.xlsx --output outputs/researched.xlsx --green-policy verified-only --max-sources 30 --no-ai
 ```
 
-* `scan` creates `outputs/citation_preview.csv`, `outputs/citations_extracted.json`, and `outputs/scan_report.json`, but no workbook.
-* `--stage blue` fills A–L and a limited amount of `Query_Log` metadata. It never changes user-entered query date, reviewer details, or other human fields.
-* `--stage all` performs both stages. By default the green phase only writes rows with a reviewer-entered verdict of `Real - correct` or `Real - citation has errors`; without these, it still writes metadata research suggestions to `outputs/research_proposals.json`.
-* `--green-policy provisional` permits preliminary, **unverified** green coding. This is for testing only; do not interpret as verification.
-* `--stage research` uses all existing blue rows in the supplied workbook, favoring reviewer-verified link X over the model's link E.
-* `--no-ai` disables the paid model but still allows public bibliographic lookups. `--offline` disables all network requests.
-* `--max-sources 10` keeps the online prototype small. Omit (or use 0) to attempt all sources.
-* `--tool CGP` sets the tool code if PDFs aren't in an `inputs/CGP/` folder. For other models, place PDFs under `inputs/CLG/` (Claude), `inputs/GEM/` etc.; check tool codes in the supplied `Tools` tab.
-* **Never** use the same file path for `--template` and `--output`. The agent refuses to overwrite the original workbook.
+To process a single model whose filenames have no platform identifier, pass `--tool OEV` (or another exact tool code). For mixed models, use subfolders, e.g. `inputs/CGP/Q01.pdf`, `inputs/GEM/Q01.pdf`. For one question per file, include its question code (`Q01_...pdf`) if the prompt text is missing. A *combined* PDF can be detected when each full new question begins on a new page. If several questions share one page, split the PDF first rather than allowing the agent to guess.
 
-## Best data-collection method
+The `scan` command creates a preview and scan report without an XLSX. All `run` commands preserve an existing reviewer workbook; **never** use the same `--template` and `--output` path. The `--offline` flag disables all network research (even if an API key is set). `--no-ai` disables the paid language model but allows Crossref, Europe PMC, PubMed and OpenAlex unless `--offline` is also set. `--max-sources 0` means all eligible sources. A failed online lookup is recorded as missing, not coded as a hallucination. Network/cache data and study output remain local.
 
-Export/print each original AI response to PDF **with clickable links intact**, keeping its original text and reference order. The agent reads the PDF's hyperlink annotations using PyMuPDF, so it doesn't need to log into AI websites. Place PDFs under `inputs/<tool-code>/`. The PDFs can be one-per-question or combined per tool. For a combined export, start each Q1–Q12 response on a **new page**. If question detection fails, name single-question exports `Q01_...pdf`, `Q02_...pdf`, etc.
+### Human review CSV (optional)
 
-**Do not correct citations before extraction.** The study measures wrong citations and hallucinations. When PDF export hides an additional citation under `+1`, loses a hyperlink, or gives only a generic label such as `PMC`, the agent records a warning. It does **not** fabricate a missing reference or mark it as hallucinated. Some named but unlinked publications can be captured as text-only rows with URL=`NR`.
+```powershell
+python review_workbook.py --workbook outputs/blue.xlsx --export-review-template outputs/review_template.csv
+python review_workbook.py --workbook outputs/blue.xlsx --decisions outputs/review_template.csv --output outputs/reviewed.xlsx
+```
 
-In the initial offline pilot (12 separately exported ChatGPT responses), the parser recovered **33 candidate citation entries** and **28 clickable URLs**. These sample files and outputs are **not committed to GitHub**. The count is not a verified citation census: compressed `+N` labels and missing PDF annotations require manual inspection. Upload local PDF exports to reproduce and check the preview file for citation order, tool/question, and source links.
+A human edits the exported CSV, selecting exact workbook dropdown values such as `Real - correct` or `Cannot verify - not enough detail`. Empty cells leave existing values untouched. The script validates all decisions **before** changing any row, refuses to overwrite previously entered reviewer fields unless `--allow-review-overwrite` is expressly provided, and writes a `.review_audit.json` file with input hashes and changed columns. This is not an automated citation-verification step.
 
-## Research / green-column coverage
+## APIs (optional; no API key required for blue extraction)
 
-Public Crossref, Europe PMC, and OpenAlex APIs can provide actual titles, DOIs, PMIDs, years, paper types, citation counts, author names, some institutional affiliations, and open-access metadata. Optional AI coding can infer appropriate allowed study-design and subspecialty labels **from retrieved evidence**, when possible. Unavailable information is marked `NOT FOUND` / `NR` according to the original worksheet rules.
+Copy `.env.example` to `.env` **on your computer only**. `OPENAI_API_KEY` enables the optional paid structured model extraction; select `OPENAI_MODEL` for your account. `OPENALEX_API_KEY` is an optional separate OpenAlex credential that may improve rate limits. `RESEARCH_CONTACT_EMAIL` provides an appropriate public research contact for NCBI and other APIs. Do **not** post credentials in chat or commit `.env`.
 
-Important gaps that the agent **does not guess**:
+The OpenAI model must transcribe only citations present in the original PDF text or its URI annotations. It cannot add invented source URLs or declare a citation real. If it fails, the deterministic parser remains available. Public APIs can have access controls and quota changes; failures are reported in source lookup events.
 
-- The 2026 Journal Citation Reports impact factor is left blank without a licensed verified JCR value.
-- Journal origin country requires an independently confirmed SCImago entry; it is never inferred from the publisher's headquarters.
-- Corresponding author identity, most-recent institutional affiliation, author countries, funding, and open-access subtype may require review of full text.
-- The agent does not fill human-only citation-verification statuses, link verdicts, gender, race/ethnicity, or reviewer accuracy flags.
+## Output files and research traceability
 
-Metadata returned by a DOI lookup or a working URL is **not proof** that the AI citation was accurate. Human confirmation of the citation-to-source match is mandatory. Duplicate source *occurrences* are preserved when visible in separate reference entries.
+The main Streamlit download is `anesthesia_citation_research_package.zip`, containing:
 
-## Review the output before publication
+- `citation_extraction_filled.xlsx` — original template filled only in permitted columns
+- `citation_preview.csv` — source-by-source transcription and PDF page
+- `review_queue.csv` — missing links, uncertain metadata, hidden references and other actions
+- `run_report.json` — question/platform coverage, warnings, source counts and pipeline version
+- `research_proposals.json` — 33 proposed values per eligible source, field-level provenance, source lookup statuses and review flags
+- `citations_extracted.json` — original records, including PDF SHA-256, extraction method and confidence
 
-`outputs/run_report.json` includes warnings and counts. `outputs/research_proposals.json` holds preliminary 33-field metadata suggestions even if the green sheet is gated pending a human verdict. `outputs/citation_preview.csv` helps review the original text. The original `Statistician_Dataset`, data validation, sheet styles, and formulas are preserved; Excel recalculates its own formulas when you open the saved workbook.
+No original model-response PDFs, published-study protocol or research participant data is committed to GitHub. `inputs/`, `outputs/`, `cache/` and `.env` are ignored. The **original blank workbook is stored losslessly** as `template/AI_Citation_Bias_Extraction_Workbook.xlsx.gz` and expanded automatically on first use. Keep the repository private until the investigators approve sharing.
 
-A full online run can take much longer than the MVP setup if hundreds of sites are inaccessible, paid subscriptions are needed, or many citations require manual verification. Be mindful of third-party AI and database usage terms, especially when processing licensed clinical-reference responses via external APIs.
+## Validation & limitations
 
-## Current test coverage
+GitHub Actions runs the automated regression suite on Python 3.11/3.12/3.13. Tests include synthetic PDF URI annotations, visible URL-only lists, combined files, all 16 tool identifiers, missing links, PubMed author-specific affiliations, missing data, review-only resume, reviewer change protection, workbook OOXML preservation and persistent downloads. The historical 12-file ChatGPT pilot yields **33 candidate citations and 28 preserved original links**, with `+N` citation groups and missing hyperlinks requiring manual reconciliation. **This is not a verified citation census.**
 
-The included unit tests check PDF hyperlink extraction, Q identification, combined PDFs, original workbook part preservation, idempotence, human-verdict gates, public-URL safety and geographic mapping. The **offline citation-copying phase was exercised against the initial 12 supplied PDFs**; these study inputs are intentionally excluded from the repository. The full source-research phase depends on internet access, external APIs, source availability and (optionally) your API key; it must be validated against a reviewed set of real publications in your environment before bulk use.
-
-## Repository privacy and scope
-
-This repository tracks only source code, tests, documentation, and the original blank workbook losslessly compressed as `.xlsx.gz`. The runtime-expanded `.xlsx` is ignored by Git. **Do not commit** passwords, session cookies, account exports, original AI answers, processed research datasets, or API keys. In research deployments, maintain the repository as private unless the study team approves publication. See `docs/ARCHITECTURE.md` and `docs/VALIDATION.md`.
+Before analyzing outputs from any new AI platform, review a small set manually, especially tools that display **sources searched** separately from **sources cited**, platforms that collapse or hide links, and scanned PDFs. A screenshot-only PDF with no selectable text or links is flagged as needing OCR/re-export, not fabricated. See `docs/ARCHITECTURE.md`, `docs/VALIDATION.md` and `docs/PROTOCOL_MAPPING.md`.

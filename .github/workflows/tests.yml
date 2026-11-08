@@ -1,16 +1,21 @@
-name: Python tests
+name: Agent verification
 on:
   push:
   pull_request:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-ui.txt
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q agent run_agent.py app.py
+      - run: python -m compileall -q agent run_agent.py review_workbook.py app.py
