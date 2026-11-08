@@ -142,13 +142,33 @@ def extract_links(pages):
         by_url = defaultdict(list)
         for uri, rect in annotations:
             by_url[uri].append(rect)
+        def line_near(rect):
+            if not lines:
+                return ''
+            found = min(lines, key=lambda ln: (
+                0 if not (ln['box'] & rect).is_empty else 1,
+                abs(ln['box'].y0 - rect.y0)))
+            return found['text']
         for uri, rects in by_url.items():
             clusters = []
             for rect in sorted(rects, key=lambda x: (x.y0, x.x0)):
-                if clusters and rect.y0 - clusters[-1][-1].y0 < 27:
-                    clusters[-1].append(rect)
-                else:
-                    clusters.append([rect])
+                if clusters:
+                    prior = clusters[-1][-1]
+                    prev_label = line_near(prior)
+                    current_label = line_near(rect)
+                    # A single clickable citation can span lines and have
+                    # multiple URI annotations. But consecutive numbered
+                    # references to the *same URL* are separate occurrences,
+                    # essential for the study's repeat-in-answer coding.
+                    different_line = abs(rect.y0 - prior.y0) > 6
+                    new_citation = different_line and (
+                        bool(LIST_START.match(current_label)) or
+                        (normalize(current_label) == normalize(prev_label) and
+                         len(normalize(current_label)) > 18))
+                    if rect.y0 - prior.y0 < 27 and not new_citation:
+                        clusters[-1].append(rect)
+                        continue
+                clusters.append([rect])
             for cluster in clusters:
                 rect = cluster[0]
                 if _section_for_position(lines, rect.y0, carry_section) == 'unused':
