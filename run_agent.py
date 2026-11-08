@@ -221,10 +221,13 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     if journal_evidence:
         proposed = supplement_journal_fields(proposed, evidence, journal_evidence, workbook.data.countries)
     has_metadata = any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+    informative_fields = sum(value not in ('', 'NR', 'NOT FOUND', 'Not applicable', None)
+                             for value in proposed.values())
     critical = any('conflicts with' in msg or 'differs materially' in msg for msg in warnings)
     return {
         'fields': proposed, 'has_metadata': has_metadata,
-        'can_autowrite': has_metadata and not critical,
+        'informative_fields': informative_fields,
+        'can_autowrite': has_metadata and informative_fields > 0 and not critical,
         'record_url': evidence.get('source_url', ''),
         'match': match, 'review_flags': warnings,
         'field_provenance': evidence.get('field_provenance', {}),
@@ -290,7 +293,11 @@ def _research_audit(rows, proposals):
             elif not proposed.get('has_metadata'):
                 status = 'metadata_unavailable'
             elif not proposed.get('can_autowrite', False):
-                status = 'identity_conflict_or_ambiguous_source'
+                flags = proposed.get('review_flags') or []
+                identity_problem = any('conflicts with' in msg or 'differs materially' in msg
+                                       for msg in flags)
+                status = ('identity_conflict_or_ambiguous_source' if identity_problem
+                          else 'metadata_without_informative_fields')
             elif proposed.get('written_to_workbook'):
                 status = 'written_provisional_or_reviewer_gated'
             else:
@@ -433,8 +440,12 @@ def main(argv=None):
                     warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
                                      'warning': 'No publication metadata retrieved; manual verification required'})
                 if info['has_metadata'] and not info['can_autowrite']:
+                    identity_problem = any('conflicts with' in msg or 'differs materially' in msg
+                                           for msg in info.get('review_flags', []))
                     warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
-                                     'warning': 'Conflicting source IDs; green fields withheld pending review'})
+                                     'warning': ('Publication identity mismatch; green fields withheld pending review'
+                                                 if identity_problem else
+                                                 'Metadata retrieved without informative fields; no green data written')})
                 print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
                       f'{"written" if written else "proposal only"} metadata={info["has_metadata"]}')
             except Exception as exc:
@@ -457,6 +468,11 @@ def main(argv=None):
     tool_coverage = defaultdict(set)
     for item in rows:
         tool_coverage[item['tool']].add(item['question'])
+    # Report actual substantive values saved, not mere NR/NOT FOUND placeholders.
+    informative_output_cells = sum(
+        wb.get_row(rownum).get(col) not in ('', 'NR', 'NOT FOUND', 'Not applicable', None)
+        for rownum in wb.existing.values() for col in GREEN_COLS
+    )
     report = {
         'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
         'input_documents': documents, 'citations_extracted': len(rows),
@@ -467,6 +483,7 @@ def main(argv=None):
             for item in research),
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
+        'informative_green_cells_in_output_workbook': informative_output_cells,
         'review_queue_items': len(queue),
         'sources_with_identity_conflicts': sum(x['research_status'] == 'identity_conflict_or_ambiguous_source' for x in audit),
         'informative_green_cells_proposed': sum(x['informative_green_fields'] for x in audit),

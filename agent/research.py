@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote, quote
 from xml.etree import ElementTree as ET
 import hashlib
+from html import unescape
 import os
 import ipaddress
 import json
@@ -81,6 +82,29 @@ def quality(a, b):
     if not x or not y:
         return 0.0
     return SequenceMatcher(None, x, y).ratio()
+
+
+def citation_title_similarity(as_cited_title, original_reference, retrieved_title):
+    """Compare the true title, not page numbers, author initials or journal data.
+
+    A complete displayed reference may include the exact publication title
+    followed by its journal, issue and a generic 'Full article' label. Its
+    full-string similarity is misleadingly low. Exact, substantial title
+    containment in the *original* source text is strong evidence of a title
+    match, but is NOT a verified DOI/source-identity verdict.
+    """
+    published = norm_title(retrieved_title)
+    reference = norm_title(original_reference)
+    title = str(retrieved_title or '')
+    if (len(published) >= 28
+            and len(re.findall(r'[A-Za-z]{3,}', title)) >= 4
+            and published in reference):
+        return 1.0, 'retrieved title appears verbatim in original reference'
+    score = quality(as_cited_title, retrieved_title)
+    search_hint = title_search_hint(as_cited_title)
+    if search_hint:
+        score = max(score, quality(search_hint, retrieved_title))
+    return score, 'as-cited title similarity'
 
 
 def normalize_doi(s):
@@ -504,7 +528,9 @@ class Bibliography:
         if (oa or {}).get('is_retracted') or any('retract' in x.lower() for x in ((pubmed or {}).get('publication_types') or [])):
             match['warnings'].append('Publication flagged retracted; independent verification required')
         if actual_title and title and len(title_words) >= 5:
-            match['title_similarity'] = round(quality(title, actual_title), 3)
+            similarity, basis = citation_title_similarity(title, raw, actual_title)
+            match['title_similarity'] = round(similarity, 3)
+            match['title_match_basis'] = basis
             if match['title_similarity'] < .65:
                 match['warnings'].append('Original cited title differs materially from retrieved publication; manually compare')
         elif actual_title:
@@ -577,6 +603,10 @@ class Bibliography:
         def put(col, value, source, url='', reason=''):
             if value is None or value == '':
                 return
+            # Some bibliographic APIs return HTML-escaped journal names, e.g.
+            # 'Anesthesia &amp; Analgesia'. Excel must contain human-readable text.
+            if isinstance(value, str):
+                value = unescape(value)
             rows[col] = value
             provenance[col] = {'source': source, 'url': url or '', 'reason': reason}
 
