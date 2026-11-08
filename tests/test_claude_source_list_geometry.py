@@ -72,6 +72,7 @@ class ClaudeReferenceBoundaryTests(TestCase):
             rows,warnings=parse_pdf(path,'CLG',self.book.data.questions)
             self.assertEqual(len(rows),2, (rows,warnings))
             self.assertEqual(rows[1]['repeat'],'Y')
+            self.assertEqual([entry['citation'] for entry in rows], ['nysora','nysora'])
             self.assertEqual(rows[0]['source_context'],'inline_link')
 
     def test_neighboring_unnumbered_sources_with_distinct_links_not_merged(self):

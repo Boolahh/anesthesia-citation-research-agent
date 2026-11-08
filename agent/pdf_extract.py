@@ -139,6 +139,16 @@ def text_for_link(page, lines, boxes):
     anchor = flatten_text(' '.join(w[4] for b in boxes for w in all_words
         if not (fitz.Rect(w[:4]) & b).is_empty and
         (fitz.Rect(w[:4]) & b).get_area() >= .2 * max(fitz.Rect(w[:4]).get_area(), 1)))
+    # A one-word lowercase linked domain badge (e.g. 'nysora', 'nih')
+    # represents one as-displayed citation label, not its entire clinical
+    # advice line. Two badges on the same line must remain two separate
+    # appearances even when they share a URL. Generic 'Full article'
+    # buttons remain eligible for reference-line context recovery below.
+    if (anchor and anchor.lower() not in GENERIC_LINKS
+            and len(anchor.split()) <= 2
+            and (anchor.islower() or original.lower().count(anchor.lower()) > 1)
+            and not LIST_START.match(original)):
+        return anchor
     # Inline footnote markers are evidence of a citation, but not a complete
     # bibliographic reference. Preserve the marker instead of claiming the
     # surrounding medical advice is the publication title.
