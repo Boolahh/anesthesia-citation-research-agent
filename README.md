@@ -13,13 +13,13 @@ A working, local Python research automation package for the supplied **AI Citati
 - `agent/llm.py` — optional OpenAI structured-JSON citation extraction / research coding
 - `agent/workbook.py` — surgical edits to the original template, preserving all other sheets and formulas
 - `inputs/<TOOL_CODE>/` — **local-only** original AI conversation exports (not included in the GitHub repository)
-- `template/` — original blank workbook
+- `template/` — the original blank workbook stored losslessly as `.xlsx.gz`, expanded automatically on first use
 - `outputs/` — generated workbooks, CSV previews, and audit JSON reports (**local-only**, ignored by Git)
 - `tests/` — automated validation tests
 
 ## Windows quick start (local upload interface)
 
-1. Extract this ZIP to a folder on your computer. Install Python 3.11+ from python.org, enabling **Add Python to PATH**.
+1. Clone or download this GitHub repository. Install Python 3.11+ from python.org, enabling **Add Python to PATH**. The exact blank workbook is included in `.xlsx.gz` form and expands automatically on first use.
 2. Double-click `run_windows.bat`. It creates a virtual environment, installs the requirements, and starts the local Streamlit interface in a browser.
 3. Choose the model that produced the answers (e.g. ChatGPT / `CGP`). Upload one or more original chat PDFs; you may upload **one combined PDF containing Q1–Q12** if each question starts on a new page, or 12 separate PDFs.
 4. Choose **Citation copying only** to create the blue data first. After a human reviewer checks the original citations, marks column **U** with an actual real-source verdict, and provides **X** where appropriate, upload that reviewed workbook and use **Source research only**. No login details are needed.
@@ -89,4 +89,4 @@ The included unit tests check PDF hyperlink extraction, Q identification, combin
 
 ## Repository privacy and scope
 
-This repository tracks only application code, tests, documentation, and the blank XLSX template. **Do not commit** passwords, session cookies, account exports, original AI answers, processed research datasets, or API keys. In research deployments, maintain the repository as private unless the study team approves publication. See `docs/ARCHITECTURE.md` and `docs/VALIDATION.md`.
+This repository tracks only source code, tests, documentation, and the original blank workbook losslessly compressed as `.xlsx.gz`. The runtime-expanded `.xlsx` is ignored by Git. **Do not commit** passwords, session cookies, account exports, original AI answers, processed research datasets, or API keys. In research deployments, maintain the repository as private unless the study team approves publication. See `docs/ARCHITECTURE.md` and `docs/VALIDATION.md`.
