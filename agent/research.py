@@ -216,6 +216,35 @@ def iso2_country(code, countries):
     return d.get('name') or 'NR', d.get('region') or 'NR', d.get('income') or 'NR'
 
 
+def _author_name_key(name):
+    """Strict name normalization for matching authors *within one publication*."""
+    return re.sub(r'[^a-z0-9]', '', str(name or '').casefold())
+
+
+def _openalex_author_country(author, countries):
+    """Return a country only when this one authorship has exactly one country.
+
+    OpenAlex may list several institutions and nations without meaningful
+    affiliation chronology. Neither their order nor an institution name is
+    sufficient to select the newest institution. A unique country across
+    that author's indexed work affiliation(s) is weaker, review-required
+    evidence for geography alone.
+    """
+    codes = set()
+    for code in author.get('countries') or []:
+        if isinstance(code, str) and re.fullmatch(r'[A-Za-z]{2}', code):
+            codes.add(code.upper())
+    for ins in author.get('institutions') or []:
+        if isinstance(ins, dict):
+            code = ins.get('country_code')
+            if isinstance(code, str) and re.fullmatch(r'[A-Za-z]{2}', code):
+                codes.add(code.upper())
+    if len(codes) != 1:
+        return None
+    result = iso2_country(next(iter(codes)), countries)
+    return result if result[0] != 'NR' else None
+
+
 def _node_text(node):
     return ' '.join(' '.join(node.itertext()).split()) if node is not None else ''
 
@@ -828,6 +857,57 @@ class Bibliography:
                 name = ' '.join(filter(None, [author.get('given'), author.get('family')]))
                 put(col, name or 'NR', 'Crossref indexed authorship', cr_url)
             review_flags.append('Crossref author affiliations omitted: correspondence/recency unverified')
+        # Author-country fallback for the study's primary geography outcome:
+        # match the *same author on this paper*, require a unique country, and
+        # leave the institution unfilled. OpenAlex institution lists are NOT
+        # chronological and must never become invented "most recent" affiliations.
+        def propose_openalex_country(author, country_col, region_col, income_col, name):
+            if not author:
+                return
+            geo = _openalex_author_country(author, self.countries)
+            if geo is None:
+                return
+            country, region, income = geo
+            existing_country = rows[country_col]
+            if existing_country not in ('', 'NR', 'NOT FOUND'):
+                if existing_country != country:
+                    review_flags.append(
+                        f'{name}: conflicting PubMed/OpenAlex country evidence; '
+                        'existing PubMed country retained')
+                return
+            reason = ('unique country in author-specific OpenAlex authorship on '
+                      'this publication; author institution recency not inferred')
+            for col, val in ((country_col, country), (region_col, region), (income_col, income)):
+                if val != 'NR':
+                    put(col, val, 'OpenAlex matched author-country', oa_url, reason)
+            review_flags.append(
+                f'{name}: author-country inferred from a single OpenAlex work-country; '
+                'verify before including in geographic outcomes')
+
+        if oa_auth:
+            for pos, country_col, region_col, income_col in (
+                (0, 'AN', 'AO', 'AP'), (-1, 'AS', 'AT', 'AU')
+            ):
+                if authors:
+                    person = authors[pos]
+                    if person.get('group'):
+                        continue
+                    author_name = person.get('name') or ''
+                    norm_name = _author_name_key(author_name)
+                    # A unique, exact normalized name match on the same paper
+                    # avoids accidental attribution to a similarly placed author.
+                    matched = [a for a in oa_auth
+                               if norm_name and
+                               _author_name_key((a.get('author') or {}).get('display_name')
+                                                or a.get('raw_author_name')) == norm_name]
+                    candidate = matched[0] if len(matched) == 1 else None
+                else:
+                    candidate = oa_auth[pos]
+                    author_name = ((candidate.get('author') or {}).get('display_name')
+                                   or candidate.get('raw_author_name') or '')
+                propose_openalex_country(
+                    candidate, country_col, region_col, income_col, author_name)
+
         # Corresponding fields AV-AZ intentionally remain NR unless authoritative
         # full text explicitly identifies that individual's institution and date.
         journal = pm.get('journal') or ((cr.get('container-title') or [''])[0]) or \
