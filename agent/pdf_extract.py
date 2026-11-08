@@ -371,7 +371,7 @@ def _plain_references(pages):
                            '_explicit_section': True,
                            'evidence': {'page': page.number+1,
                                         'reference_label': text[:55],
-                                        'section': 'bibliography'}
+                                        'section': 'bibliography'}}
             if current is not None:
                 current['_last_y0'] = rect.y0
                 current['_last_x0'] = rect.x0
