@@ -43,11 +43,11 @@ Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environmen
 
 ### Affiliation safeguards
 
-The system now reads PubMed XML **author by author**. It refuses to assign an institution to an author just because another author lists it, and refuses to pick the "most recent" institution from several affiliations when chronology is unknown. OpenAlex affiliations are retained as possible research clues but **are not automatically used** for the first, last or corresponding author's recorded institution or country. Journal country is not substituted with publisher headquarters. The official issue year is preferred over online-first year when PubMed supplies both, with this choice documented in provenance.
+The system reads PubMed XML **author by author** and rejects repeated composite paragraphs that actually list multiple authors' institutions. It refuses to assign an institution to an author just because another author lists it, and refuses to pick the "most recent" institution from several affiliations when chronology is unknown. OpenAlex affiliations are retained as possible research clues but **are not automatically used** for the first, last or corresponding author's recorded institution or country. Journal country is not substituted with publisher headquarters. Explicit countries must appear at the end of an affiliation, not only inside a university name; ambiguous country names are withheld. The official issue year is preferred over online-first year when PubMed supplies both, with this choice documented in provenance.
 
 ### Unavailable or licensed research fields
 
-Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Investigators may optionally import a documented, locally held journal evidence CSV (see `docs/JOURNAL_EVIDENCE.md`) to populate these fields with source provenance, **without scraping licensed services**. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
+Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
 
 ## CLI reference (one-line commands from the project root)
 
@@ -58,7 +58,6 @@ python run_agent.py scan --input inputs --no-ai --offline
 python run_agent.py run --stage blue --input inputs --output outputs/blue.xlsx --no-ai --offline
 python run_agent.py run --stage all --input inputs --output outputs/provisional.xlsx --max-sources 10 --green-policy provisional --no-ai
 python run_agent.py run --stage research --template outputs/reviewed.xlsx --output outputs/researched.xlsx --green-policy verified-only --max-sources 30 --no-ai
-python run_agent.py run --stage research --template outputs/reviewed.xlsx --output outputs/researched.xlsx --journal-evidence outputs/licensed_journal_evidence.csv --no-ai
 ```
 
 To process a single model whose filenames have no platform identifier, pass `--tool OEV` (or another exact tool code). For mixed models, use subfolders, e.g. `inputs/CGP/Q01.pdf`, `inputs/GEM/Q01.pdf`. For one question per file, include its question code (`Q01_...pdf`) if the prompt text is missing. A *combined* PDF can be detected when each full new question begins on a new page. If several questions share one page, split the PDF first rather than allowing the agent to guess.
@@ -76,7 +75,7 @@ A human edits the exported CSV, selecting exact workbook dropdown values such as
 
 ## APIs (optional; no API key required for blue extraction)
 
-Copy `.env.example` to `.env` **on your computer only**. `OPENAI_API_KEY` enables the optional paid structured model extraction; select `OPENAI_MODEL` for your account. `OPENALEX_API_KEY` is an optional separate OpenAlex credential that may improve rate limits. `RESEARCH_CONTACT_EMAIL` provides an appropriate public research contact for NCBI and other APIs. Do **not** post credentials in chat or commit `.env`.
+Copy `.env.example` to `.env` **on your computer only**. `OPENAI_API_KEY` enables the optional paid structured model extraction; select `OPENAI_MODEL` for your account. `OPENALEX_API_KEY` is a separate OpenAlex credential that may improve rate limits. `RESEARCH_CONTACT_EMAIL` provides an appropriate public research contact for NCBI and other APIs. Do **not** post credentials in chat or commit `.env`.
 
 The OpenAI model must transcribe only citations present in the original PDF text or its URI annotations. It cannot add invented source URLs or declare a citation real. If it fails, the deterministic parser remains available. Public APIs can have access controls and quota changes; failures are reported in source lookup events.
 
@@ -87,6 +86,7 @@ The main Streamlit download is `anesthesia_citation_research_package.zip`, conta
 - `citation_extraction_filled.xlsx` — original template filled only in permitted columns
 - `citation_preview.csv` — source-by-source transcription and PDF page
 - `review_queue.csv` — missing links, uncertain metadata, hidden references and other actions
+- `research_audit.csv` — one row per original citation showing whether source research was skipped, unavailable, disputed, proposed, or written; counts *informative* fields and lists supporting databases
 - `run_report.json` — question/platform coverage, warnings, source counts and pipeline version
 - `research_proposals.json` — 33 proposed values per eligible source, field-level provenance, source lookup statuses and review flags
 - `citations_extracted.json` — original records, including PDF SHA-256, extraction method and confidence
@@ -98,3 +98,12 @@ No original model-response PDFs, published-study protocol or research participan
 GitHub Actions runs the automated regression suite on Python 3.11/3.12/3.13. Tests include synthetic PDF URI annotations, visible URL-only lists, combined files, all 16 tool identifiers, missing links, PubMed author-specific affiliations, missing data, review-only resume, reviewer change protection, workbook OOXML preservation and persistent downloads. The historical 12-file ChatGPT pilot yields **33 candidate citations and 28 preserved original links**, with `+N` citation groups and missing hyperlinks requiring manual reconciliation. **This is not a verified citation census.**
 
 Before analyzing outputs from any new AI platform, review a small set manually, especially tools that display **sources searched** separately from **sources cited**, platforms that collapse or hide links, and scanned PDFs. A screenshot-only PDF with no selectable text or links is flagged as needing OCR/re-export, not fabricated. See `docs/ARCHITECTURE.md`, `docs/VALIDATION.md` and `docs/PROTOCOL_MAPPING.md`.
+
+### Bibliographic lookup and trust improvements (v2.1)
+
+- PMC identifiers are resolved through the NIH PMC ID Converter when needed; DOI-only records are cross-checked with Europe PMC, PubMed EFetch, Crossref and OpenAlex when available. See [official PMC identifier documentation](https://pmc.ncbi.nlm.nih.gov/tools/id-converter-api/).
+- A DOI/PMID in the original *hyperlink* takes retrieval precedence over a contradictory identifier printed in the AI's reference. The disagreement is **flagged** and automatic green writes are withheld; the original blue citation remains unchanged.
+- Unlinked full-title citations can be searched against Crossref and PubMed with conservative title-similarity and ambiguity thresholds. These remain provisional candidates; a vague label such as `2024 POQI consensus` is never treated as a verified paper identity.
+- PubMed shared multi-author affiliation paragraphs, country names embedded in institutional names, and multiple equally plausible title matches are recorded for review rather than arbitrarily assigned.
+- The run report distinguishes candidates evaluated, successful external lookup events, actual metadata records, green rows written, and identity conflicts. For debugging a specific row, consult `research_audit.csv` then `research_proposals.json`.
+- The original 12-file pilot is checked in **optional local-only** tests (`ANESTHESIA_TEST_PRIVATE_CORPUS=1 python -m unittest discover -s tests -v`). The private PDF files are never added to GitHub.
