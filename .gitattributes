@@ -1,0 +1,10 @@
+*.xlsx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.json text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.bat text eol=crlf
