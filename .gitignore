@@ -1,0 +1,28 @@
+# Credentials and machine-local settings
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.streamlit/secrets.toml
+
+# Original AI responses, unreviewed study data and resulting workbooks
+inputs/
+outputs/
+cache/
+artifacts/
+
+# Python and editor clutter
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime logs
+*.log
