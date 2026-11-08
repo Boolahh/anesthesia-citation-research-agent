@@ -325,3 +325,29 @@ class LicensedJournalEvidenceTests(TestCase):
                 'Clinical Journal,Canada,,5.2,,2026-11-01\n')
             with self.assertRaises(ValueError):
                 load_journal_evidence(file,wb.data.countries)
+
+
+class CrossPlatformStudyIntegrityTests(TestCase):
+    def test_identical_pdfs_from_two_platforms_both_count(self):
+        # Study records cannot be globally deduplicated by PDF hash: two
+        # independent tools may legitimately emit byte-identical responses.
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            with fitz.open() as doc:
+                page=doc.new_page(width=900,height=800)
+                page.insert_text((45,50),Q11,fontsize=9)
+                page.insert_text((45,85),'References',fontsize=10)
+                page.insert_text((45,115),'1. Example cardiac anesthesia paper, 2024 DOI 10.1234/example',fontsize=9)
+                pdf=root/'source.pdf'
+                doc.save(pdf)
+            for code in ('CGP','CLG'):
+                folder=root/'inputs'/code
+                folder.mkdir(parents=True)
+                (folder/'Q11.pdf').write_bytes(pdf.read_bytes())
+            cp=subprocess.run([sys.executable,str(ROOT/'run_agent.py'),'scan','--no-ai','--offline',
+                               '--input',str(root/'inputs'),'--report-dir',str(root/'reports')],
+                              cwd=ROOT,capture_output=True,text=True)
+            self.assertEqual(cp.returncode,0,cp.stderr)
+            records=json.loads((root/'reports'/'citations_extracted.json').read_text())
+            self.assertEqual({x['tool'] for x in records},{'CGP','CLG'})
+            self.assertEqual(len(records),2)

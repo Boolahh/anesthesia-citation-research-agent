@@ -118,15 +118,18 @@ def gather(args, workbook, ai):
         raise RuntimeError('No PDF files found. Upload PDFs for blue/all; for research-only, use a reviewed workbook.')
     collected, warnings, documents, known_hashes = [], [], [], {}
     for path in paths:
-        digest = checksum(path)
-        if digest in known_hashes:
-            warnings.append({'file': path.name, 'warning': f'Duplicate PDF identical to {known_hashes[digest].name}; skipped'})
-            continue
-        known_hashes[digest] = path
         tool = file_tool(path, workbook.data.tool_names, args.tool, root)
         if not tool:
             warnings.append({'file': path.name, 'warning': 'AI tool unknown; use the model selector or a folder named with its tool code'})
             continue
+        digest = checksum(path)
+        # Identical outputs from DIFFERENT AI tools are independent study data.
+        # Skip only repeated byte-for-byte exports within the same model.
+        duplicate_key = (tool, digest)
+        if duplicate_key in known_hashes:
+            warnings.append({'file': path.name, 'warning': f'Duplicate PDF within {tool}, identical to {known_hashes[duplicate_key].name}; skipped'})
+            continue
+        known_hashes[duplicate_key] = path
         try:
             citations, issues = parse_pdf(path, tool, workbook.data.questions, ai)
         except Exception as exc:
