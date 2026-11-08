@@ -101,6 +101,22 @@ def citation_title_similarity(as_cited_title, original_reference, retrieved_titl
             and published in reference):
         return 1.0, 'retrieved title appears verbatim in original reference'
     score = quality(as_cited_title, retrieved_title)
+    # Some clinical checklist labels abbreviate *both* the issuing society
+    # and the medical syndrome. A direct string comparison can produce a
+    # false conflict even when the official published title is unambiguous.
+    # This is a provisional title-alias check, not a source-authenticity verdict.
+    expansions = {
+        'ASRA': 'American Society of Regional Anesthesia and Pain Medicine',
+        'LAST': 'Local Anesthetic Systemic Toxicity',
+    }
+    expanded = re.sub(
+        r'\b(?:ASRA|LAST)\b',
+        lambda m: expansions[m.group().upper()],
+        str(as_cited_title or ''), flags=re.I)
+    if expanded != str(as_cited_title or ''):
+        expanded_score = quality(expanded, retrieved_title)
+        if expanded_score >= .90:
+            return expanded_score, 'abbreviated label with matching clinical acronym expansion; verify source identity'
     search_hint = title_search_hint(as_cited_title)
     if search_hint:
         score = max(score, quality(search_hint, retrieved_title))

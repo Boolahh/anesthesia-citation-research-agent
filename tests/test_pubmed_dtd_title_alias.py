@@ -81,6 +81,21 @@ class PubmedDtdAndTitleTests(TestCase):
                 self.assertGreaterEqual(score, .65)
                 self.assertIn('abbreviated', explanation)
 
+    def test_asra_last_2020_checklist_acronym_is_not_false_title_conflict(self):
+        cited = 'ASRA LAST checklist: 2020 version (RAPM)'
+        official = ('American Society of Regional Anesthesia and Pain Medicine '
+                    'Local Anesthetic Systemic Toxicity checklist: 2020 version')
+        score, basis = citation_title_similarity(cited, cited, official)
+        self.assertGreaterEqual(score, .90)
+        self.assertIn('abbreviated label', basis)
+        unrelated = ('Volatile anesthetics versus total intravenous anesthesia '
+                     'in cardiac surgery: systematic review')
+        score, basis = citation_title_similarity(
+            'ACCF/AHA and EACTS guidelines recommended volatile anesthetics',
+            'ACCF/AHA and EACTS guidelines recommended volatile anesthetics',
+            unrelated)
+        self.assertLess(score, .65)
+
     def test_descriptive_meta_analysis_label_is_not_full_title(self):
         self.assertTrue(descriptive_source_label('Meta-analysis of 36 randomized CABG trials'))
         self.assertFalse(descriptive_source_label(
