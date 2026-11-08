@@ -351,3 +351,50 @@ class CrossPlatformStudyIntegrityTests(TestCase):
             records=json.loads((root/'reports'/'citations_extracted.json').read_text())
             self.assertEqual({x['tool'] for x in records},{'CGP','CLG'})
             self.assertEqual(len(records),2)
+
+
+class NetworkAndArchiveSafetyTests(TestCase):
+    def test_model_supplied_domain_resolving_to_private_address_is_not_fetched(self):
+        from agent.research import public_dns_destination
+        fake=[(2,1,6,'',('10.0.1.2',443))]
+        with patch('socket.getaddrinfo',return_value=fake):
+            self.assertFalse(public_dns_destination('https://fake-public-journal.example.org/article'))
+        with tempfile.TemporaryDirectory() as d:
+            engine=Bibliography(TemplateWorkbook(TEMPLATE).data.countries,d)
+            with patch('socket.getaddrinfo',return_value=fake), patch.object(engine.s,'get') as getter:
+                self.assertIsNone(engine.public_page('https://fake-public-journal.example.org/article'))
+                getter.assert_not_called()
+
+    def test_multi_model_zip_upload_rejects_path_traversal(self):
+        from io import BytesIO
+        from unittest.mock import MagicMock
+        import runpy
+        st=MagicMock()
+        st.session_state={}
+        st.columns.side_effect=lambda spec:[MagicMock() for _ in range(spec if isinstance(spec,int) else len(spec))]
+        st.form_submit_button.return_value=False
+        st.selectbox.side_effect=['CGP','blue','verified-only']
+        st.file_uploader.return_value=None
+        st.number_input.return_value=10
+
+        class FakeTemplate:
+            def __init__(self,path):
+                self.data=SimpleNamespace(tool_names={'CGP':'ChatGPT','CLG':'Claude'})
+        with patch.dict(sys.modules,{'streamlit':st}), patch('agent.workbook.TemplateWorkbook',FakeTemplate):
+            app=runpy.run_path(str(ROOT/'app.py'),run_name='__main__')
+        store=app['store_pdfs']
+        with tempfile.TemporaryDirectory() as d:
+            stream=BytesIO()
+            with ZipFile(stream,'w') as z:
+                z.writestr('CGP/Q11.pdf',b'%PDF-sample1')
+                z.writestr('CLG/Q11.pdf',b'%PDF-sample2')
+            upl=SimpleNamespace(name='mixed.zip',getvalue=lambda:stream.getvalue())
+            files=store([upl],Path(d)/'accepted')
+            self.assertEqual(len(files),2)
+            self.assertEqual({p.parent.name for p in files},{'CGP','CLG'})
+            unsafe=BytesIO()
+            with ZipFile(unsafe,'w') as z:
+                z.writestr('../../private.pdf',b'bad')
+            upl_bad=SimpleNamespace(name='unsafe.zip',getvalue=lambda:unsafe.getvalue())
+            with self.assertRaises(ValueError):
+                store([upl_bad],Path(d)/'rejected')

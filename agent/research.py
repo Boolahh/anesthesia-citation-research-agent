@@ -27,6 +27,26 @@ from .workbook import GREEN_COLS
 
 USER_AGENT = 'AnesthesiaCitationBiasResearchAgent/2.0 (evidence-traceable, human-verified)'
 MAX_RESPONSE = 2_000_000
+TRUSTED_BIBLIO_HOSTS = {'api.crossref.org', 'api.openalex.org', 'www.ebi.ac.uk',
+                        'eutils.ncbi.nlm.nih.gov'}
+
+
+def public_dns_destination(url):
+    """Refuse known private DNS answers for untrusted original model URLs.
+
+    This is a defense in depth, not a full guarantee against DNS rebinding.
+    Bibliographic API endpoints have fixed, recognized hostnames.
+    """
+    if not safe_url(url):
+        return False
+    host = urlparse(url).hostname
+    if host in TRUSTED_BIBLIO_HOSTS:
+        return True
+    try:
+        answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        return bool(answers) and all(ipaddress.ip_address(item[4][0]).is_global for item in answers)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def safe_url(url):
@@ -175,8 +195,8 @@ class Bibliography:
             address = url
             try:
                 for hop in range(6):
-                    if not safe_url(address):
-                        raise ValueError('Unsafe redirected URL')
+                    if not public_dns_destination(address):
+                        raise ValueError('Unsafe / privately resolving URL or DNS failure')
                     with self.s.get(address, params=params if hop == 0 else None,
                                     timeout=self.timeout, allow_redirects=False,
                                     stream=True, headers={'Accept': accept}) as resp:
