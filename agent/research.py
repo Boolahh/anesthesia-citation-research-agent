@@ -219,6 +219,25 @@ def title_search_hint(as_cited):
     # legitimate title parentheses such as (PONV) or (LAST).
     value = re.sub(r'\s*\([^()]{4,160}\b(?:19|20)\d{2}\)\s*$', '', value)
     value = re.sub(r'\s*(?:doi|pmid)\s*:\s*\S+\s*$', '', value, flags=re.I)
+    # Bibliography entries can enclose the real title between a leading
+    # author byline and a trailing issue citation. Strip only unambiguous
+    # syntactic wrappers from the *lookup hint*, never the blue original.
+    value = re.sub(
+        r'^(?:[A-Z][a-z\-\u00C0-\u024F]+\s+[A-Z]{1,4},?\s*)?et\s+al\.\s*',
+        '', value)
+    value = re.sub(r'^([A-Z][a-z\-\u00C0-\u024F]+\s+[A-Z]{1,4}),\s*', '', value)
+    # Journal suffix must include a publication year; otherwise a journal
+    # name appearing legitimately within the article title could be removed.
+    journal_tail = (
+        r'\.\s*(?:N\.?\s*Engl\.?\s*J\.?\s*Med|New England Journal of Medicine|'
+        r'JAMA|Lancet|BMJ|Anesthesiology|Anaesthesia|'
+        r'Anesthesia\s*(?:&|and)\s*Analgesia)'
+        r'\s+(?:19|20)\d{2}(?:\s*;\s*\d+(?:\(\d+\))?\s*:\s*\d+[–\-]\d+)?\.?\s*$')
+    value, removed_issue = re.subn(journal_tail, '', value, flags=re.I)
+    if removed_issue:
+        # Trial acronym in addition to journal issue metadata, e.g. (MYRIAD).
+        # Preserve all other parenthetical terms such as (LAST) or (PONV).
+        value = re.sub(r'\s*\([A-Z0-9-]{3,16}\)\s*$', '', value)
     value = value.strip(' .:;\"\u201c\u201d')
     return value if 25 <= len(value) <= 240 and len(re.findall(r'[A-Za-z]{3,}', value)) >= 7 else ''
 

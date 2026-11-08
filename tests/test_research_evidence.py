@@ -36,6 +36,43 @@ class SourceIdentityTests(TestCase):
         self.assertIn('(LAST)', title_search_hint(
             'An international consensus for management of local anesthetic systemic toxicity (LAST)'))
 
+    def test_claude_landoni_multipart_reference_title_lookup(self):
+        # Real-format Claude Q11 source, with synthetic bibliographic APIs.
+        original = (
+            'Landoni G, et al. Volatile Anesthetics versus Total Intravenous '
+            'Anesthesia for Cardiac Surgery (MYRIAD). N Engl J Med '
+            '2019;380:1214–1225.'
+        )
+        as_cited_title = original[len('Landoni G, '):]
+        published = 'Volatile Anesthetics versus Total Intravenous Anesthesia for Cardiac Surgery'
+        self.assertEqual(title_search_hint(original), published)
+        self.assertEqual(title_search_hint(as_cited_title), published)
+        with TemporaryDirectory() as folder:
+            engine = self.engine(folder)
+            calls = []
+            def fetch(url, params=None):
+                calls.append((url, params))
+                if url == 'https://api.crossref.org/works':
+                    return {'message': {'items': [{
+                        'title': [published], 'DOI': '10.1056/NEJMoa1816476',
+                        'type': 'journal-article'}]}}
+                return None
+            with patch.object(engine, 'fetch_json', side_effect=fetch), \
+                 patch.object(engine, 'public_page', return_value=None):
+                evidence = engine.metadata({
+                    'citation': original, 'title': as_cited_title,
+                    'url': 'NR', 'doi': 'NR', 'pmid': 'NR'
+                })
+        self.assertEqual(evidence['doi'], '10.1056/nejmoa1816476')
+        self.assertEqual(evidence['match']['method'], 'high_similarity_title_candidate')
+        self.assertEqual(evidence['match']['title_similarity'], 1.0)
+        self.assertFalse(any('differs materially' in w
+                             for w in evidence['match']['warnings']))
+        queried = next(params['query.title'] for url, params in calls
+                       if url == 'https://api.crossref.org/works')
+        self.assertEqual(queried, published)
+        self.assertIn('Landoni G, et al.', original)
+
     def test_pmc_converter_accepts_only_identifier_for_requested_paper(self):
         with TemporaryDirectory() as folder:
             engine = self.engine(folder)
