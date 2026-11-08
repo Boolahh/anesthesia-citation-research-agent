@@ -1,279 +1,417 @@
 #!/usr/bin/env python3
-"""Citation Bias Extraction Agent -- offline PDF extraction + optional AI/web enrichment.
+"""Reproducible AI citation audit: PDFs -> as-cited columns -> sourced proposals.
 
-Examples:
-  python run_agent.py scan --no-ai
-  python run_agent.py run --stage blue --no-ai
-  python run_agent.py run --stage all --max-sources 10
-  python run_agent.py run --stage research --green-policy verified-only --template outputs/research_blue.xlsx
+All research assignments remain provisional pending human source verification. No
+credentials or original chat PDFs are written to GitHub. Designed for mixed
+platforms, resumable batch research, and auditable study data.
 """
 from __future__ import annotations
-import argparse
+
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime,timezone
+from datetime import datetime, timezone
 from pathlib import Path
+import argparse
 import csv
 import hashlib
 import json
 import os
+import re
 import sys
 
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parent/'.env')
-except ImportError:pass
+except ImportError:
+    pass
 
 from agent.workbook import TemplateWorkbook, GREEN_COLS
 from agent.pdf_extract import parse_pdf
-from agent.research import Bibliography, quality, norm_title
+from agent.research import Bibliography, quality
 
-ROOT=Path(__file__).resolve().parent
-
-
-def file_tool(path, known, default=None):
-    for part in (path.parent.name, path.stem[:3]):
-        if part.upper() in known:return part.upper()
-    for code,name in known.items():
-        if name.lower().replace(' ','') in path.name.lower().replace(' ',''):
-            return code
-    if default and default in known:return default
-    return None
+ROOT = Path(__file__).resolve().parent
+APP_VERSION = '2.0.0'
 
 
-def write_json(path,data):
-    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
-    path.write_text(json.dumps(data,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+def write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
 
 
-def write_csv(path,rows,fields):
-    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
-    with path.open('w',encoding='utf-8-sig',newline='') as f:
-        writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore')
-        writer.writeheader();writer.writerows(rows)
+def write_csv(path, rows, fields):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.DictWriter(f, fields, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def checksum(path):
+    dig = hashlib.sha256()
+    with open(path, 'rb') as source:
+        while True:
+            data = source.read(2**18)
+            if not data:
+                break
+            dig.update(data)
+    return dig.hexdigest()
+
+
+def file_tool(path, known, default=None, root=None):
+    """Match one of the exact 16 codes, avoiding ChatGPT/Clinicians collisions."""
+    path = Path(path)
+    parents = [path.parent.name]
+    if root:
+        try:
+            parents = [x.name for x in path.relative_to(root).parents if x.name not in ('.', '')]
+        except ValueError:
+            pass
+    for folder in parents:
+        if folder.upper() in known:
+            return folder.upper()
+    stem = path.stem.lower()
+    match = re.match(r'^([a-z]{3})(?:[_\- .]|$)', stem, re.I)
+    if match and match.group(1).upper() in known:
+        return match.group(1).upper()
+    normalized = re.sub(r'[^a-z0-9]', '', stem)
+    aliases = {
+        'CGC': ['chatgptforclinicians'], 'CGP': ['chatgpt'], 'CLG': ['claude'],
+        'CKA': ['clinicalkey'], 'CON': ['consensus'], 'DSK': ['deepseek'],
+        'DOX': ['doximity'], 'DRI': ['drinfo'], 'DYN': ['dynaai', 'dynamed'],
+        'GLA': ['glasshealth'], 'GEM': ['googlegemini', 'gemini'],
+        'HEI': ['heidievidence', 'heidi'], 'COP': ['microsoftcopilot', 'copilot'],
+        'OEV': ['openevidence'], 'UTD': ['uptodate'], 'VER': ['verahealth', 'vera'],
+    }
+    found = sorted([(len(alias), code, alias) for code, words in aliases.items() if code in known
+                    for alias in words if alias in normalized], reverse=True)
+    if found:
+        best = found[0]
+        conflicts = [x for x in found[1:] if x[1] != best[1] and x[2] not in best[2]]
+        # 'ChatGPT for Clinicians' includes 'ChatGPT': choose the longer one.
+        # Independent matches such as 'Claude vs ChatGPT' are ambiguous.
+        if not conflicts:
+            return best[1]
+    return default if default in known else None
 
 
 def choose_ai(args):
-    if args.no_ai or args.offline:return None
+    if args.no_ai or args.offline:
+        return None
     if not os.getenv('OPENAI_API_KEY'):
-        print('[INFO] OPENAI_API_KEY absent; deterministic parsing and bibliographic API lookup only.')
+        print('[INFO] AI API key absent; proceeding with public bibliographic lookup only.')
         return None
     from agent.llm import ResearchAI
     return ResearchAI()
 
 
-def gather(args,workbook,ai):
-    root=Path(args.input)
-    paths=sorted(p for p in root.rglob('*.pdf') if p.is_file()) if root.is_dir() else ([root] if root.suffix.lower()=='.pdf' else [])
-    if args.max_docs:paths=paths[:args.max_docs]
-    if not paths:raise RuntimeError(f'No PDF files found under {root}')
-    collected=[];issues=[];documents=[]
-    for p in paths:
-        tool=file_tool(p,workbook.data.tool_names,args.tool)
+def gather(args, workbook, ai):
+    root = Path(args.input)
+    if root.is_dir():
+        paths = sorted(x for x in root.rglob('*.pdf') if x.is_file())
+    else:
+        paths = [root] if root.is_file() and root.suffix.lower() == '.pdf' else []
+    if args.max_docs:
+        paths = paths[:args.max_docs]
+    if not paths:
+        raise RuntimeError('No PDF files found. Upload PDFs for blue/all; for research-only, use a reviewed workbook.')
+    collected, warnings, documents, known_hashes = [], [], [], {}
+    for path in paths:
+        digest = checksum(path)
+        if digest in known_hashes:
+            warnings.append({'file': path.name, 'warning': f'Duplicate PDF identical to {known_hashes[digest].name}; skipped'})
+            continue
+        known_hashes[digest] = path
+        tool = file_tool(path, workbook.data.tool_names, args.tool, root)
         if not tool:
-            issues.append({'file':str(p),'warning':'Unknown AI platform; place under inputs/TOOL_CODE/ (e.g. CGP)'})
+            warnings.append({'file': path.name, 'warning': 'AI tool unknown; use the model selector or a folder named with its tool code'})
             continue
-        try: found, warnings=parse_pdf(p,tool,workbook.data.questions,api=ai)
+        try:
+            citations, issues = parse_pdf(path, tool, workbook.data.questions, ai)
         except Exception as exc:
-            issues.append({'file':p.name,'warning':'PDF parsing failed: '+str(exc)})
+            warnings.append({'file': path.name, 'warning': f'PDF parse failed: {type(exc).__name__}: {str(exc)[:150]}'})
             continue
-        collected+=found
-        per_question=defaultdict(list)
-        for c in found:per_question[c['question']].append(c)
+        collected.extend(citations)
+        per_question = defaultdict(list)
+        for citation in citations:
+            citation['pdf_sha256'] = digest
+            per_question[citation['question']].append(citation)
         if not per_question:
-            documents.append({'file':p.name,'tool':tool,'question':None,'citations':0,'with_urls':0,
-                              'warnings':warnings})
-        for question,items in per_question.items():
-            documents.append({'file':p.name,'tool':tool,'question':question,
-                              'citations':len(items),'with_urls':sum(1 for c in items if c['url']!='NR'),
-                              'warnings':warnings})
-        for w in warnings:issues.append({'file':p.name,'warning':w})
-        print(f'[PDF] {p.name}: {len(found)} citation(s), {sum(c["url"]!="NR" for c in found)} with URLs')
-    # Renumber across multiple files for the same tool/question; require separate source PDFs
-    # to preserve order if multiple documents are supplied for one response.
-    grouped=defaultdict(list)
-    for c in collected:grouped[(c['tool'],c['question'])].append(c)
-    result=[]
-    for key, rows in sorted(grouped.items()):
-        seen=set()
-        for i,c in enumerate(rows,1):
-            c['order']=i
-            identity=c['doi'] if c['doi']!='NR' else c['pmid'] if c['pmid']!='NR' else c['url'] if c['url']!='NR' else c['citation']
-            c['repeat']='Y' if identity in seen else 'N'
+            documents.append({'file': path.name, 'tool': tool, 'question': None, 'citations': 0,
+                              'with_urls': 0, 'pdf_sha256': digest, 'warnings': issues})
+        for question, rows in per_question.items():
+            documents.append({'file': path.name, 'tool': tool, 'question': question,
+                              'citations': len(rows), 'with_urls': sum(x['url'] != 'NR' for x in rows),
+                              'pdf_sha256': digest, 'warnings': issues})
+        warnings.extend({'file': path.name, 'warning': issue} for issue in issues)
+        print(f'[PDF] {path.name} [{tool}]: {len(citations)} citation candidate(s)')
+    grouped = defaultdict(list)
+    for citation in collected:
+        grouped[(citation['tool'], citation['question'])].append(citation)
+    result = []
+    for key in sorted(grouped):
+        seen = set()
+        for i, citation in enumerate(grouped[key], 1):
+            citation['order'] = i
+            identity = citation['doi'] if citation['doi'] != 'NR' else citation['pmid'] if citation['pmid'] != 'NR' else citation['url'] if citation['url'] != 'NR' else citation['citation']
+            citation['repeat'] = 'Y' if identity in seen else 'N'
             seen.add(identity)
-            result.append(c)
-    return result,documents,issues
+            result.append(citation)
+    return result, documents, warnings
 
 
-def clean_category(value, allowed, fallback='NR'):
-    if value in allowed:return value
-    if value in ('NR','NOT FOUND','Not applicable','') and value:return value
-    return fallback
+def clean_category(value, allowed):
+    if value in allowed or value in ('NR', 'NOT FOUND', 'Not applicable', ''):
+        return value
+    return 'NR'
 
 
-def refine_green(green,workbook):
-    # Never fill human-only columns. Limit only known categorical columns to list values.
-    cat=workbook.data.categories
-    for col,key in [('AD','F'),('AE','H'),('AF','N'),('AG','J'),('AI','G'),('BF','I')]:
-        green[col]=clean_category(green.get(col,'NR'),cat.get(key,[]))
-    country_lookup={x['name']:(x['region'],x['income']) for x in workbook.data.countries.values()}
-    for c,r,i in [('AN','AO','AP'),('AS','AT','AU'),('AX','AY','AZ'),('BB','BC','BD')]:
-        name=green.get(c,'')
-        if name in country_lookup:
-            green[r],green[i]=country_lookup[name]
+def refine_green(green, workbook):
+    categories = workbook.data.categories
+    for col, code in [('AD', 'F'), ('AE', 'H'), ('AF', 'N'), ('AG', 'J'), ('AI', 'G'), ('BF', 'I')]:
+        green[col] = clean_category(green.get(col, 'NR'), categories.get(code, []))
+    country_map = {x['name']: (x['region'], x['income']) for x in workbook.data.countries.values()}
+    for c, r, i in [('AN', 'AO', 'AP'), ('AS', 'AT', 'AU'), ('AX', 'AY', 'AZ'), ('BB', 'BC', 'BD')]:
+        country = green.get(c, 'NR')
+        if country in country_map:
+            green[r], green[i] = country_map[country]
+        elif country in ('', 'NR', 'NOT FOUND', 'Not applicable'):
+            green[r] = 'NR' if country != 'NOT FOUND' else 'NOT FOUND'
+            green[i] = green[r]
         else:
-            if name not in ('NR','NOT FOUND','Not applicable'):
-                green[c]='NOT FOUND' # Unsupported country spelling; do not silently misclassify.
-            green[r]='NOT FOUND' if green[c]=='NOT FOUND' else 'NR'
-            green[i]='NOT FOUND' if green[c]=='NOT FOUND' else 'NR'
-    green['BE']=''  # 2026 JCR value is inaccessible without the licensed release; never guess.
+            # Unsupported country spelling: review it; never guess WHO/income.
+            green[c], green[r], green[i] = 'NOT FOUND', 'NOT FOUND', 'NOT FOUND'
+    green['BE'] = ''  # 2026 JCR requires a licensed verified source.
     return green
 
 
-def enrich(citation,workbook,bibliography,ai):
-    evidence=bibliography.metadata(citation)
-    proposed=bibliography.baseline_green(evidence)
-    # An external DOI or title candidate is not the human verification verdict.
-    title=proposed.get('Z','')
-    score=quality(title,citation.get('title'))
-    has_doi=(proposed.get('AB') not in ('NR','NOT FOUND','') and 
-             proposed.get('AB') == citation.get('doi'))
-    method='DOI identifier present' if has_doi else 'metadata match requires review'
-    if ai and (evidence.get('crossref') or evidence.get('openalex') or evidence.get('public_page') or evidence.get('europepmc')):
-        source_context={
-            'doi':evidence.get('doi'),'pmid':evidence.get('pmid'),
-            'crossref':evidence.get('crossref'),'openalex':evidence.get('openalex'),
-            'europepmc':evidence.get('europepmc'),'public_page':evidence.get('public_page')
-        }
-        # Only send a bounded, structured excerpt to reduce cost.
-        from agent.llm import ResearchAI
-        guidelines='\n'.join(workbook.data.prompts.get(n,'') for n in range(44,88))
+def enrich(citation, workbook, bibliography, ai):
+    evidence = bibliography.metadata(citation)
+    proposed = bibliography.baseline_green(evidence)
+    warnings = list(evidence.get('match', {}).get('warnings') or []) + list(evidence.get('review_flags') or [])
+    match = evidence.get('match', {})
+    if ai and any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')):
+        source_context = {k: evidence.get(k) for k in ('doi', 'pmid', 'crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')}
+        guidelines = '\n'.join(workbook.data.prompts.get(n, '') for n in range(44, 88))
         try:
-            coded=ai.code_source(citation,source_context,
-               {name:workbook.data.categories.get(col,[]) for col,name in [
-                 ('F','Type of source'),('G','Author type'),('H','Study design'),
-                 ('I','Open access'),('J','Funding'),('N','Subspecialty')]},guidelines)
-            for col,val in zip(GREEN_COLS,coded):
-                if val not in (None,'','NOT FOUND','NR'):
-                    # Structured metadata takes precedence for identifiers, publication date, citation counts.
-                    if col in {'Z','AA','AB','AC','AH','AJ','AK','AL','AQ','BA'} and proposed[col] not in ('NOT FOUND','NR',''):
-                        continue
-                    proposed[col]=val
+            coded = ai.code_source(citation, source_context,
+                {name: workbook.data.categories.get(code, []) for code, name in [
+                    ('F', 'Type of source'), ('G', 'Author type'), ('H', 'Study design'),
+                    ('I', 'Open access'), ('J', 'Funding'), ('N', 'Subspecialty')]}, guidelines)
+            if len(coded) != len(GREEN_COLS):
+                raise ValueError('AI returned an incorrect number of research fields')
+            # AI may propose missing columns, but must not override sourced facts;
+            # author affiliations and corresponding-author details need primary evidence.
+            restricted = {'AL','AM','AN','AO','AP','AQ','AR','AS','AT','AU','AV','AW','AX','AY','AZ','BB','BC','BD','BE'}
+            for col, value in zip(GREEN_COLS, coded):
+                if col in restricted or value in ('', 'NR', 'NOT FOUND', None):
+                    continue
+                if proposed[col] in ('NR', 'NOT FOUND', ''):
+                    proposed[col] = value
+                    evidence.setdefault('field_provenance', {})[col] = {
+                        'source': 'AI proposal from retrieved evidence', 'url': '',
+                        'reason': 'Requires independent reviewer verification'}
         except Exception as exc:
-            method+='; AI coding failed: '+str(exc)[:130]
-    proposed=refine_green(proposed,workbook)
-    has_source=bool(evidence.get('crossref') or evidence.get('openalex') or evidence.get('europepmc') or evidence.get('public_page'))
-    return {'fields':proposed,'match_method':method,'title_similarity':round(score,3),
-            'has_metadata':has_source,'record_url':evidence.get('source_url',''),
-            'identifiers':{'doi':evidence.get('doi'),'pmid':evidence.get('pmid')},
-            'sources_queried':['Crossref','OpenAlex','Europe PMC','public source URL']}
+            warnings.append('Optional AI coding failed: '+str(exc)[:160])
+    proposed = refine_green(proposed, workbook)
+    has_metadata = any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+    critical = any('conflicts with' in msg for msg in warnings)
+    return {
+        'fields': proposed, 'has_metadata': has_metadata,
+        'can_autowrite': has_metadata and not critical,
+        'record_url': evidence.get('source_url', ''),
+        'match': match, 'review_flags': warnings,
+        'field_provenance': evidence.get('field_provenance', {}),
+        'lookup_events': evidence.get('lookup_events', []),
+        'identifiers': {'doi': evidence.get('doi'), 'pmid': evidence.get('pmid')},
+    }
+
+
+def _review_rows(rows, proposals, warnings):
+    queue = []
+    by_key = {(r['tool'], r['question'], r['order']): r for r in proposals}
+    for item in rows:
+        key = (item['tool'], item['question'], item['order'])
+        p = by_key.get(key, {})
+        reasons = []
+        if item['url'] == 'NR':
+            reasons.append('No original source URL')
+        if item.get('extraction_confidence') in ('low', 'review'):
+            reasons.append('Low-confidence PDF extraction')
+        if p.get('error'):
+            reasons.append('Research exception: '+str(p['error'])[:100])
+        if p and not p.get('has_metadata'):
+            reasons.append('Publication metadata not retrieved')
+        if p.get('review_flags'):
+            reasons.extend(p['review_flags'][:5])
+        if reasons:
+            queue.append({'tool': key[0], 'question': key[1], 'citation_order': key[2],
+                          'source_file': item.get('source_file', ''), 'pdf_page': item.get('source_page', ''),
+                          'original_citation': item.get('citation', ''), 'original_url': item.get('url', ''),
+                          'priority': 'High' if item['url'] == 'NR' or p.get('error') else 'Review',
+                          'reason': '; '.join(reasons)})
+    for warning in warnings:
+        if any(term in warning.get('warning', '').lower() for term in ('collapsed', 'unknown', 'failed', 'zero')):
+            queue.append({'tool': warning.get('tool', ''), 'question': warning.get('question', ''),
+                          'citation_order': warning.get('order', ''), 'source_file': warning.get('file', ''),
+                          'pdf_page': '', 'original_citation': '', 'original_url': '',
+                          'priority': 'High', 'reason': warning.get('warning', '')})
+    return queue
+
+
+def _original_rows(workbook):
+    result = []
+    for (tool, question, order), excel_row in sorted(workbook.existing.items()):
+        d = workbook.get_row(excel_row)
+        preferred = d.get('X') if d.get('X') not in ('', 'NR', 'NOT FOUND') else d.get('E')
+        result.append({'tool': tool, 'question': question, 'order': order,
+                       'citation': d.get('D', ''), 'url': preferred or 'NR',
+                       'title': d.get('F', ''), 'authors': d.get('G', ''),
+                       'year': d.get('H', ''), 'journal': d.get('I', ''),
+                       'doi': d.get('J', ''), 'pmid': d.get('K', ''),
+                       'source_file': 'reviewed workbook', 'source_page': 0,
+                       'excel_row': excel_row, 'extraction_method': 'previous_workbook',
+                       'extraction_confidence': 'reviewed'})
+    return result
 
 
 def main(argv=None):
-    ap=argparse.ArgumentParser(description='Citation-bias AI agent: PDFs -> evidence -> original Excel template')
-    ap.add_argument('command',choices=['scan','run'])
-    ap.add_argument('--input',default=str(ROOT/'inputs'),help='Folder containing TOOL_CODE subfolders of PDF exports')
-    ap.add_argument('--template',default=str(ROOT/'template'/'AI_Citation_Bias_Extraction_Workbook.xlsx'))
-    ap.add_argument('--output',default=str(ROOT/'outputs'/'citation_extraction_filled.xlsx'))
-    ap.add_argument('--report-dir',default=str(ROOT/'outputs'))
-    ap.add_argument('--tool',default=None,help='Optional default tool code (e.g. CGP)')
-    ap.add_argument('--no-ai',action='store_true',help='Disable paid AI calls; links and basic metadata still extracted')
-    ap.add_argument('--offline',action='store_true',help='Do not access any network; PDF-only extraction')
-    ap.add_argument('--stage',choices=['blue','research','all'],default='all')
-    ap.add_argument('--green-policy',choices=['verified-only','provisional'],default='verified-only',
-      help='verified-only requires U column already marked real; provisional writes AI suggestions for manual checking')
-    ap.add_argument('--max-sources',type=int,default=0,help='Limit new source lookups for pilot tests (0 = all)')
-    ap.add_argument('--max-docs',type=int,default=0)
-    ap.add_argument('--contact-email',default=os.getenv('RESEARCH_CONTACT_EMAIL',''))
-    args=ap.parse_args(argv)
-    reportdir=Path(args.report_dir);reportdir.mkdir(parents=True,exist_ok=True)
-    wb=TemplateWorkbook(args.template)
-    ai=choose_ai(args)
-    rows,docs,warnings=gather(args,wb,ai)
-    write_json(reportdir/'citations_extracted.json',rows)
-    write_csv(reportdir/'citation_preview.csv',rows,['tool','question','order','citation','url',
-              'title','authors','year','journal','doi','pmid','repeat','source_file','source_page','extraction_method'])
-    counts=defaultdict(list)
-    for c in rows:counts[(c['tool'],c['question'])].append(c)
-    if args.command=='scan':
-        write_json(reportdir/'scan_report.json',{'documents':docs,'citations':len(rows),'warnings':warnings})
-        print(f'[SCAN COMPLETE] {len(rows)} citations; see {reportdir/"citation_preview.csv"}')
+    ap = argparse.ArgumentParser(description='AI citation evidence pipeline: original PDFs to research workbook')
+    ap.add_argument('command', choices=['scan', 'run'])
+    ap.add_argument('--input', default=str(ROOT/'inputs'), help='PDF folder, including CODE/ subfolders for mixed models')
+    ap.add_argument('--template', default=str(ROOT/'template'/'AI_Citation_Bias_Extraction_Workbook.xlsx'))
+    ap.add_argument('--output', default=str(ROOT/'outputs'/'citation_extraction_filled.xlsx'))
+    ap.add_argument('--report-dir', default=str(ROOT/'outputs'))
+    ap.add_argument('--tool', help='Default tool code for unlabelled files; omit to auto-detect from filename/folder')
+    ap.add_argument('--stage', choices=['blue', 'research', 'all'], default='all')
+    ap.add_argument('--green-policy', choices=['verified-only', 'provisional'], default='verified-only')
+    ap.add_argument('--no-ai', action='store_true')
+    ap.add_argument('--offline', action='store_true')
+    ap.add_argument('--max-sources', type=int, default=0)
+    ap.add_argument('--max-docs', type=int, default=0)
+    ap.add_argument('--contact-email', default=os.getenv('RESEARCH_CONTACT_EMAIL', ''))
+    args = ap.parse_args(argv)
+    if args.max_sources < 0 or args.max_docs < 0:
+        ap.error('max-sources/max-docs must be nonnegative')
+    report_dir = Path(args.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    wb = TemplateWorkbook(args.template)
+    ai = choose_ai(args)
+    if args.command == 'scan' or args.stage in ('blue', 'all'):
+        rows, documents, warnings = gather(args, wb, ai)
+    else:
+        # Research-only resumes from an edited/reviewed workbook, with no PDFs.
+        rows, documents, warnings = _original_rows(wb), [], []
+    write_json(report_dir/'citations_extracted.json', rows)
+    write_csv(report_dir/'citation_preview.csv', rows,
+        ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
+         'source_file','source_page','extraction_method','extraction_confidence','pdf_sha256'])
+    if args.command == 'scan':
+        write_json(report_dir/'scan_report.json', {'documents': documents, 'citations': len(rows), 'warnings': warnings})
+        queue = _review_rows(rows, [], warnings)
+        write_csv(report_dir/'review_queue.csv', queue,
+            ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
+        print(f'[SCAN COMPLETE] {len(rows)} candidate citations; see {report_dir/"citation_preview.csv"}')
         return 0
-    if args.stage in ('blue','all'):
-        for c in rows:
-            try: c['excel_row']=wb.upsert_blue(c)
-            except Exception as exc: warnings.append({'file':c['source_file'],'warning':str(exc)})
-        by_doc=defaultdict(list)
-        for doc in docs:
-            if doc['question']:
-                by_doc[(doc['tool'],doc['question'])].append(doc)
-        for key, subdocs in by_doc.items():
-            incomplete=any(d['with_urls']==0 for d in subdocs)
-            # A blank citation list might be legitimate or a PDF export bug. Flag, don't claim no citations.
-            if counts[key]:
-                wb.update_query_log(key[0],key[1],len(counts[key]),[d['file'] for d in subdocs],incomplete)
-            else:
-                warnings.append({'tool':key[0],'question':key[1],
-                                 'warning':'Zero extracted citations: confirm with original conversation before recording zero'})
-    research=[]
-    if args.stage in ('research','all'):
-        bibliography=Bibliography(wb.data.countries,ROOT/'cache',args.contact_email,offline=args.offline)
-        candidates=rows
-        if args.stage=='research':
-            candidates=[]
-            # Re-process existing citation rows including original URLs, even without original PDFs.
-            for (tool,q,order),rn in sorted(wb.existing.items()):
-                d=wb.get_row(rn)
-                candidates.append({'tool':tool,'question':q,'order':order,'citation':d.get('D',''),
-                    'url':d.get('X') if d.get('X') not in ('','NR') else d.get('E',''),
-                    'title':d.get('F',''),'authors':d.get('G',''),'year':d.get('H',''),
-                    'journal':d.get('I',''),'doi':d.get('J',''),'pmid':d.get('K',''),
-                    'excel_row':rn})
-        seen=0
-        for c in candidates:
-            if args.max_sources and seen>=args.max_sources:break
-            rn=wb.existing.get((c['tool'],c['question'],int(c['order'])))
-            if rn is None:continue
-            if c.get('url') in ('','NR') and c.get('doi') in ('','NR') and c.get('pmid') in ('','NR'):
-                warnings.append({'tool':c['tool'],'question':c['question'],'order':c['order'],
-                                 'warning':'No retrievable source link/DOI/PMID; research skipped'})
-                continue
-            seen+=1
-            report={'tool':c['tool'],'question':c['question'],'order':c['order'], 'row':rn}
+    if args.stage in ('blue', 'all'):
+        for item in rows:
             try:
-                info=enrich(c,wb,bibliography,ai)
-                report.update(info)
-                report['written_to_workbook']=bool(info['has_metadata'] and wb.upsert_green(rn,[info['fields'][k] for k in GREEN_COLS],args.green_policy))
-                if not info['has_metadata']:
-                    warnings.append({'tool':c['tool'],'question':c['question'],'order':c['order'],
-                                     'warning':'No real-source metadata could be retrieved; verify manually'})
-                print(f'[SOURCE] {c["tool"]}/{c["question"]} #{c["order"]}: '
-                      f'{"coded" if report["written_to_workbook"] else "proposal only"} '
-                      f'(metadata={info["has_metadata"]})')
+                item['excel_row'] = wb.upsert_blue(item)
             except Exception as exc:
-                report['error']=str(exc)
-                warnings.append({'tool':c['tool'],'question':c['question'],'order':c['order'],
-                                 'warning':'Source research failure: '+str(exc)[:240]})
-            research.append(report)
-            # Restart-safe per-source checkpoint; never record an unverified hallucination verdict.
-            write_json(reportdir/'research_proposals.json',research)
-    outfile=wb.save(args.output)
-    report={'created_utc':datetime.now(timezone.utc).isoformat(),
-            'input_documents':docs,'citations_extracted':len(rows),
-            'citations_with_urls':sum(c.get('url') not in ('','NR') for c in rows),
-            'sources_researched':len(research),'green_cells_policy':args.green_policy,
-            'stages':args.stage,'ai_used':bool(ai),'offline':args.offline,
-            'warning_count':len(warnings)+len(wb.warnings),
-            'warnings':warnings+[{'warning':x} for x in wb.warnings],
-            'output_workbook':str(outfile)}
-    write_json(reportdir/'run_report.json',report)
-    print(f'\n[SAVED] {outfile}\n[REPORT] {reportdir/"run_report.json"}\n'
-          f'[SUMMARY] {len(rows)} citations, {len(research)} research attempts, '
-          f'{report["warning_count"]} review warnings')
+                warnings.append({'file': item['source_file'], 'warning': f'Workbook row failure: {exc}'})
+        by_question = defaultdict(list)
+        for doc in documents:
+            if doc['question']:
+                by_question[(doc['tool'], doc['question'])].append(doc)
+        for (tool, question), docs in by_question.items():
+            source_rows = [x for x in rows if x['tool'] == tool and x['question'] == question]
+            if source_rows:
+                wb.update_query_log(tool, question, len(source_rows),
+                    [x['file'] for x in docs], incomplete=any(x['with_urls'] == 0 for x in docs))
+            else:
+                warnings.append({'tool': tool, 'question': question,
+                                 'warning': 'Zero citations extracted; manually confirm the conversation'})
+    research = []
+    if args.stage in ('research', 'all'):
+        bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
+                                   offline=args.offline)
+        attempts = 0
+        for item in rows:
+            if args.max_sources and attempts >= args.max_sources:
+                break
+            key = (item['tool'], item['question'], int(item['order']))
+            rownum = wb.existing.get(key)
+            if rownum is None:
+                continue
+            has_identifier = any(item.get(k) not in ('', 'NR', None) for k in ('url','doi','pmid'))
+            # Permit a constrained title lookup if there is no URL/ID. Original blue
+            # fields remain unchanged, and results require human confirmation.
+            title = item.get('title', '')
+            title_candidate = len(re.findall(r'[A-Za-z]{3,}', title)) >= 7 and 25 <= len(title) <= 240
+            if not has_identifier and not title_candidate:
+                warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
+                                 'warning': 'No source identifier and insufficient title; research skipped'})
+                continue
+            attempts += 1
+            record = {'tool': key[0], 'question': key[1], 'order': key[2], 'row': rownum}
+            try:
+                info = enrich(item, wb, bibliography, ai)
+                record.update(info)
+                written = bool(info['can_autowrite'] and wb.upsert_green(rownum,
+                    [info['fields'][k] for k in GREEN_COLS], args.green_policy))
+                record['written_to_workbook'] = written
+                if not info['has_metadata']:
+                    warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
+                                     'warning': 'No publication metadata retrieved; manual verification required'})
+                if info['has_metadata'] and not info['can_autowrite']:
+                    warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
+                                     'warning': 'Conflicting source IDs; green fields withheld pending review'})
+                print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
+                      f'{"written" if written else "proposal only"} metadata={info["has_metadata"]}')
+            except Exception as exc:
+                record['error'] = f'{type(exc).__name__}: {str(exc)[:250]}'
+                record['written_to_workbook'] = False
+                warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
+                                 'warning': 'Research exception: '+record['error']})
+            research.append(record)
+            # Crash-recovery checkpoint: proposals are *not* accepted/verified by this.
+            write_json(report_dir/'research_proposals.json', research)
+    if not research:
+        # Avoid leaving a previous run's unrelated proposals in reused folders.
+        write_json(report_dir/'research_proposals.json', [])
+    output = wb.save(args.output)
+    queue = _review_rows(rows, research, warnings)
+    write_csv(report_dir/'review_queue.csv', queue,
+        ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
+    tool_coverage = defaultdict(set)
+    for item in rows:
+        tool_coverage[item['tool']].add(item['question'])
+    report = {
+        'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
+        'input_documents': documents, 'citations_extracted': len(rows),
+        'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
+        'sources_researched': len(research),
+        'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
+        'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
+        'review_queue_items': len(queue),
+        'green_cells_policy': args.green_policy, 'stages': args.stage,
+        'ai_used': bool(ai), 'offline': args.offline,
+        'tools_detected': {k: sorted(v) for k,v in tool_coverage.items()},
+        'warning_count': len(warnings)+len(wb.warnings),
+        'warnings': warnings+[{'warning': x} for x in wb.warnings],
+        'output_workbook': str(output),
+        'metadata_provenance_file': str(report_dir/'research_proposals.json') if research else None,
+    }
+    write_json(report_dir/'run_report.json', report)
+    print(f'\n[SAVED] {output}\n[REPORT] {report_dir/"run_report.json"}\n'
+          f'[SUMMARY] {len(rows)} citation candidates, {len(research)} source lookups, '
+          f'{report["rows_written_green"]} green rows, {len(queue)} review items')
     return 0
 
-if __name__=='__main__':
-    try:sys.exit(main())
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
     except Exception as exc:
-        print('[ERROR]',type(exc).__name__,str(exc),file=sys.stderr)
+        print('[ERROR]', type(exc).__name__, str(exc), file=sys.stderr)
         sys.exit(1)

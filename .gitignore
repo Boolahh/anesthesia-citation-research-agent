@@ -1,18 +1,20 @@
-# Credentials and machine-local settings
+# Unpublished clinical AI responses, intermediate study data and credentials
 .env
 .env.*
 !.env.example
-.venv/
-venv/
-.streamlit/secrets.toml
-
-# Original AI responses, unreviewed study data and resulting workbooks
 inputs/
 outputs/
 cache/
 artifacts/
+*.log
+.venv/
+venv/
+.streamlit/secrets.toml
 
-# Python and editor clutter
+# Ignore expanded workbook; original blank template is tracked in .xlsx.gz
+/template/*.xlsx
+
+# Python/test/editor junk
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -23,9 +25,3 @@ htmlcov/
 .DS_Store
 .vscode/
 .idea/
-
-# Runtime logs
-*.log
-
-# Auto-extracted research workbook; tracked in compressed form
-template/*.xlsx

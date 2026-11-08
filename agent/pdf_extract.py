@@ -1,290 +1,420 @@
-"""Extract citations *as displayed* and annotations from chat-export PDFs.
+"""Evidence-first extraction of citations from heterogeneous AI-response PDFs.
 
-This does not check whether a source exists. A PDF annotation can be attached to the same
-visible label multiple times; those annotation duplicates are *not* separate citations.
-True repeated citation entries within one answer are retained as separate rows.
+The source of truth is the content actually visible in the exported PDF. URLs
+may come from PDF URI annotations or literal URL text, never from guessed IDs.
+For unknown/incomplete layouts, preserve candidates plus explicit review warnings.
 """
 from __future__ import annotations
-from dataclasses import dataclass, asdict
-from pathlib import Path
+
 from collections import defaultdict
+from pathlib import Path
+from urllib.parse import unquote
+import hashlib
 import re
-from urllib.parse import urlparse, unquote
+
 import fitz
 
-DOI_RE=re.compile(r'10\.\d{4,9}/[-._;()/:A-Za-z0-9]+',re.I)
-PMID_RE=re.compile(r'\bPMID\s*[:#]?\s*(\d{6,9})\b',re.I)
-REF_HEADER=re.compile(r'^(?:key|selected|main|primary|suggested|important|additional)?\s*(?:references|guidelines(?: and references)?|sources|bibliography)\s*:?',re.I)
-YEAR_RE=re.compile(r'(?<!\d)(?:19|20)\d{2}(?!\d)')
-GENERIC_LINKS={'full','article','full article','pubmed','pubmed central','pmc','doi','clinical review','ncbi bookshelf','read more','source','link','view article','asra pain medicine'}
+DOI_RE = re.compile(r'10\.\d{4,9}/[-._;()/:A-Za-z0-9]+', re.I)
+PMID_RE = re.compile(r'\bPMID\s*[:#]?\s*(\d{6,9})\b', re.I)
+PMCID_RE = re.compile(r'\bPMC\d{5,10}\b', re.I)
+URL_RE = re.compile(r'(?<![\w@])(?:https?://|www\.)[^\s<>\[\]"“”]+', re.I)
+YEAR_RE = re.compile(r'(?<!\d)(?:19|20)\d{2}(?!\d)')
+REF_HEADER = re.compile(r'^\s*(?:\d+[).]?\s*)?(?:(?:key|selected|main|primary|suggested|important|additional|supporting|cited)\s+)?(?:references|citations|bibliography|guidelines(?:\s+and\s+references)?|sources\s+cited|cited\s+sources|sources)\s*:?[\s\-]*$', re.I)
+UNUSED_HEADER = re.compile(r'\b(?:search results|search(?:ed|ing)? (?:sources|strategy)|sources (?:found|considered|reviewed|retrieved|searched)|further reading|recommended reading|related articles|other articles|suggested search|references not cited)\b', re.I)
+STOP_HEADER = re.compile(r'^(?:bottom line|conclusion|summary|takeaways|key clinical takeaways|final answer|clinical recommendations|implementation|references not cited|sources searched|search results)\b', re.I)
+LIST_START = re.compile(r'^\s*(?:\[(\d{1,3})\]|\((\d{1,3})\)|(\d{1,3})[.)]|[•●▪\-–])\s+(\S.+)$')
+GENERIC_LINKS = {'full', 'article', 'full article', 'pubmed', 'pubmed central', 'pmc', 'doi', 'clinical review', 'ncbi bookshelf', 'read more', 'source', 'link', 'view article', 'asra pain medicine'}
 
 
 def flatten_text(s):
-    return re.sub(r'\s+', ' ', s).strip()
+    return re.sub(r'\s+', ' ', str(s or '')).strip()
 
 
 def normalize(s):
-    return re.sub(r'[^a-z0-9]+','',s.lower())
+    return re.sub(r'[^a-z0-9]+', '', str(s or '').lower())
 
 
 def trim_tracking(url):
-    # Do not strip user-visible URLs in blue cells. This function is for matching IDs only.
-    return url.split('?',1)[0].split('#',1)[0]
+    return str(url or '').split('?', 1)[0].split('#', 1)[0]
 
 
-def ids_as_shown(text,url):
-    doi=DOI_RE.search(text) or DOI_RE.search(unquote(url))
-    pmid=PMID_RE.search(text)
+def ids_as_shown(text, url):
+    merged = f'{text} {unquote(str(url or ""))}'
+    doi = DOI_RE.search(merged)
+    pmid = PMID_RE.search(merged)
     if not pmid:
-        pmid=re.search(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/',url,re.I)
-    return ((doi.group(0).rstrip('.,;') if doi else 'NR'), (pmid.group(1) if pmid else 'NR'))
+        pmid = re.search(r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)', str(url), re.I)
+    return doi.group().rstrip('.,;)') if doi else 'NR', pmid.group(1) if pmid else 'NR'
 
 
-def rough_fields(text,url):
-    doi,pmid=ids_as_shown(text,url)
-    year=YEAR_RE.search(text)
-    author='NR'
-    ma=re.match(r'\s*([A-Z][\w\-\u00C0-\u024F ]{1,45}(?:\s+et al\.?)?)\s*[,.]',text)
-    if ma and (re.search(r'\bet al\b',ma.group(1),re.I) or re.match(r'^[A-Z][a-z-]+\s+[A-Z]{1,3}\b',ma.group(1))):
-        author=ma.group(1).strip()
-    journal='NR'
-    mj=re.search(r'(?:\s+—\s+|\s+[-–]\s+)(NEJM|BJA Education|Anesthesia & Analgesia|Anesthesiology|CMAJ|JACC)(?:\b|,)',text,re.I)
-    if mj:journal=mj.group(1)
-    title = text if text else 'NR'
-    if author!='NR':
-        title=flatten_text(text[ma.end():]).lstrip('.:, ') or 'NR'
-    # Do NOT silently replace original wording with a researched/corrected title.
-    return {'citation':text or 'NR','title':title,'authors':author,
-            'year':year.group() if year else 'NR','journal':journal,'doi':doi,'pmid':pmid}
+def rough_fields(text, url):
+    """Blue-column data is an *as-cited* transcription, not researched corrections."""
+    doi, pmid = ids_as_shown(text, url)
+    year = YEAR_RE.search(text)
+    author = 'NR'
+    m = re.match(r'^\s*(?:\[\d+\]|\d+[.)])?\s*([A-Z][\w\-\u00C0-\u024F ]{1,45}(?:\s+et al\.?)?)\s*[,.]', text)
+    if m and (re.search(r'\bet al\b', m.group(1), re.I) or re.match(r'^[A-Z][a-z-]+\s+[A-Z]{1,3}\b', m.group(1))):
+        author = m.group(1).strip()
+    journal = 'NR'
+    j = re.search(r'(?:\s+—\s+|\s+[-–]\s+)(NEJM|BJA Education|Anesthesia & Analgesia|Anesthesiology|CMAJ|JACC)(?:\b|,)', text, re.I)
+    if j:
+        journal = j.group(1)
+    title = flatten_text(text[m.end():]).lstrip('.:, ') if author != 'NR' else text
+    return {'citation': text or 'NR', 'title': title or 'NR', 'authors': author,
+            'year': year.group() if year else 'NR', 'journal': journal,
+            'doi': doi, 'pmid': pmid}
 
 
 def page_lines(page):
-    lines=[]
-    for block in page.get_text('dict',sort=True).get('blocks',[]):
-        if block.get('type') != 0:continue
-        for line in block.get('lines',[]):
-            t=flatten_text(''.join(span['text'] for span in line.get('spans',[])))
-            if t:
-                lines.append({'text':t,'box':fitz.Rect(line['bbox'])})
-    lines.sort(key=lambda x:(round(x['box'].y0,1),x['box'].x0))
+    lines = []
+    for block in page.get_text('dict', sort=True).get('blocks', []):
+        if block.get('type') != 0:
+            continue
+        for line in block.get('lines', []):
+            text = flatten_text(''.join(span.get('text', '') for span in line.get('spans', [])))
+            if text:
+                lines.append({'text': text, 'box': fitz.Rect(line['bbox'])})
+    lines.sort(key=lambda x: (round(x['box'].y0, 1), x['box'].x0))
     return lines
 
 
-def text_for_link(page,lines,boxes):
-    # Determine the citation shown, not merely a tooltip / shortened in-text footnote.
-    boxes=sorted(boxes,key=lambda x:(x.y0,x.x0))
-    first=boxes[0]
-    overlaps=[]
+def text_for_link(page, lines, boxes):
+    """Recover link context from PDF text geometry, including generic link buttons."""
+    if not lines:
+        return ''
+    first = min(boxes, key=lambda r: (r.y0, r.x0))
+    idx = min(range(len(lines)), key=lambda i: (
+        0 if not (lines[i]['box'] & first).is_empty else 1,
+        abs(lines[i]['box'].y0-first.y0) + abs(lines[i]['box'].x0-first.x0)*.03))
+    original = lines[idx]['text']
+    all_words = page.get_text('words')
+    anchor = flatten_text(' '.join(w[4] for b in boxes for w in all_words
+        if not (fitz.Rect(w[:4]) & b).is_empty and
+        (fitz.Rect(w[:4]) & b).get_area() >= .2 * max(fitz.Rect(w[:4]).get_area(), 1)))
+    # Inline footnote markers are evidence of a citation, but not a complete
+    # bibliographic reference. Preserve the marker instead of claiming the
+    # surrounding medical advice is the publication title.
+    if re.fullmatch(r'(?:\[?\d{1,3}\]?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+)', anchor.strip()):
+        return anchor.strip()
+    if (len(anchor) < 12 or anchor.lower() in GENERIC_LINKS) and idx:
+        prior = lines[idx-1]
+        if abs(prior['box'].y1-lines[idx]['box'].y0) < 17 and (
+            LIST_START.match(prior['text']) or len(original) < 35):
+            original = prior['text']+' '+original
+    if idx+1 < len(lines):
+        nxt = lines[idx+1]
+        if 0 <= nxt['box'].y0-lines[idx]['box'].y1 < 6 and not LIST_START.match(nxt['text']) and (
+            nxt['text'].lower() in GENERIC_LINKS or original.endswith((',', ' and', ' of', 'Blood', 'Prediction,'))):
+            original += ' '+nxt['text']
+    return flatten_text(re.sub(r'^(?:(?:Key|Selected|Main|Primary) references)\s*:\s*', '', original, flags=re.I)).rstrip(' .')
+
+
+def _section_for_position(lines, y, initial='body'):
+    """Never code search-result dumps or explicitly uncited reading lists as citations."""
+    state = initial
     for line in lines:
-        overlap=line['box'] & first
-        if not overlap.is_empty and overlap.get_area() >= 0.015 * max(line['box'].get_area(),1):
-            overlaps.append(line)
-    if overlaps:
-        first_line=overlaps[0]
-        idx=lines.index(first_line)
-    else:
-        idx=min(range(len(lines)),key=lambda i:abs(lines[i]['box'].y0-first.y0))
-        first_line=lines[idx]
-    # Work out actual clickable phrase to distinguish a short "Full article" label.
-    words=[]
-    for b in boxes:
-        for w in page.get_text('words'):
-            rect=fitz.Rect(w[:4]); inter=rect&b
-            if not inter.is_empty and inter.get_area() >= 0.20*max(rect.get_area(),1):
-                words.append(w[4])
-    anchor=flatten_text(' '.join(words))
-    s=first_line['text']
-    if anchor.lower() in GENERIC_LINKS or len(anchor)<12:
-        # A footnote link like "Full article" belongs to the preceding source entry.
-        if idx>0 and not re.match(r'^\d+[\.)]\s', first_line['text']) and not REF_HEADER.match(lines[idx-1]['text']):
-            p=lines[idx-1]
-            if abs(p['box'].y1-first_line['box'].y0)<12 and \
-               (re.match(r'^\d+\.',p['text']) or len(s)<30):
-                s=p['text']+' '+s
-    # Join continuation of wrapped reference entries (but not next numbered entry).
-    if idx+1<len(lines) and not re.match(r'^\d+[\.)]\s',lines[idx+1]['text']):
-        nextline=lines[idx+1]
-        if nextline['box'].y0-first_line['box'].y1<6 and \
-           (nextline['text'].lower() in GENERIC_LINKS or nextline['text'].startswith('Management') or \
-            s.endswith((',', ' and', ' of', 'Blood', 'Prediction,'))):
-            s+=' '+nextline['text']
-    return re.sub(r'^(?:Key|Selected|Main|Primary) references\s*:\s*', '', flatten_text(s),flags=re.I).rstrip(' .')
-
-
-def get_question_for_file(pages, questions, filename):
-    samples=flatten_text(' '.join(p.get_text() for p in pages[:2]))
-    norm=normalize(samples)
-    matched=[]
-    for code, q in questions.items():
-        qn=normalize(q)
-        if qn in norm or (len(qn)>40 and qn[:60] in norm): matched.append(code)
-    if len(matched)==1:return matched[0],[]
-    m=re.search(r'(?i)(?:^|[_\s\-])Q\s*0?([1-9]|1[0-2])(?:[^0-9]|$)',filename)
-    if m:return f'Q{int(m.group(1)):02d}',(['Multiple question statements detected; filename Q ID used'] if len(matched)>1 else [])
-    if len(matched)>1:return matched[0],[f'Multiple question statements {matched}; split this PDF by question to ensure accurate assignment']
-    return None,['Could not identify question from PDF; name file Q01_*.pdf, etc.']
+        if line['box'].y0 > y:
+            break
+        txt = line['text'].strip()
+        if len(txt) < 100 and UNUSED_HEADER.search(txt):
+            state = 'unused'
+        elif len(txt) < 100 and REF_HEADER.match(txt):
+            state = 'cited'
+        elif len(txt) < 85 and STOP_HEADER.match(txt):
+            state = 'body'
+    return state
 
 
 def extract_links(pages):
-    groups=[]
-    for pno,page in enumerate(pages):
-        annotations=[]
+    groups = []
+    carry_section = 'body'
+    for pno, page in enumerate(pages):
+        lines = page_lines(page)
+        annotations = []
         for a in page.get_links():
-            u=a.get('uri')
-            if not u or not u.startswith(('https://','http://')):continue
-            annotations.append((u,fitz.Rect(a['from'])))
-        # Collapse duplicated annotation rectangles within a single reference entry.
-        byurl=defaultdict(list)
-        for u,rect in annotations:byurl[u].append(rect)
-        for u,rects in byurl.items():
-            clusters=[]
-            for rect in sorted(rects,key=lambda v:v.y0):
-                if clusters and rect.y0-clusters[-1][-1].y0<27:
+            uri = (a.get('uri') or '').strip()
+            if uri.lower().startswith(('https://', 'http://')):
+                annotations.append((uri, fitz.Rect(a['from'])))
+        by_url = defaultdict(list)
+        for uri, rect in annotations:
+            by_url[uri].append(rect)
+        for uri, rects in by_url.items():
+            clusters = []
+            for rect in sorted(rects, key=lambda x: (x.y0, x.x0)):
+                if clusters and rect.y0 - clusters[-1][-1].y0 < 27:
                     clusters[-1].append(rect)
                 else:
                     clusters.append([rect])
-            for rectgroup in clusters:
-                lines=page_lines(page)
-                citation=text_for_link(page,lines,rectgroup)
-                groups.append({'page':page.number+1,'y':rectgroup[0].y0,'x':rectgroup[0].x0,
-                               'url':u,'citation':citation,'kind':'linked'})
-    return sorted(groups,key=lambda g:(g['page'],g['y'],g['x']))
+            for cluster in clusters:
+                rect = cluster[0]
+                if _section_for_position(lines, rect.y0, carry_section) == 'unused':
+                    continue
+                groups.append({'page': page.number + 1, 'y': rect.y0,
+                               'x': rect.x0, 'url': uri,
+                               'citation': text_for_link(page, lines, cluster),
+                               'kind': 'pdf_link', 'confidence': 'high',
+                               'evidence': {'page': page.number+1, 'uri_annotation': uri}})
+        if lines:
+            carry_section = _section_for_position(lines, lines[-1]['box'].y1, carry_section)
+    return sorted(groups, key=lambda x: (x['page'], x['y'], x['x']))
 
 
-def unlinked_reference_lines(page):
-    lines=page_lines(page)
-    out=[]
-    active=False
-    for i,line in enumerate(lines):
-        text=line['text']
-        if REF_HEADER.match(text) and len(text)<70:
-            active=True
-            continue
-        if not active:continue
-        if re.match(r'^(?:Bottom line|The central principle|This is an educational|Reset checklist|Key clinical takeaways)',text,re.I):
-            active=False
-            continue
-        if line['box'].x0 < 53 or len(text)<12 or text.lower() in GENERIC_LINKS: continue
-        if re.match(r'^[1-9]\.|^\d{4}\s|^[A-Z]',text):
-            # An explicit list item or heading-like line after the references heading.
-            if text.endswith(':'):active=False;continue
-            out.append({'page':page.number+1,'y':line['box'].y0,'x':line['box'].x0,
-                        'citation':text,'url':'','kind':'unlinked'})
+def _visible_url(text):
+    m = URL_RE.search(text)
+    if not m:
+        return ''
+    u = m.group(0).rstrip('.,;:!>\u201d\u2019')
+    if u.count('(') < u.count(')'):
+        u = u.rstrip(')')
+    return ('https://' + u) if u.lower().startswith('www.') else u
+
+
+def _plausible_reference(text):
+    x = flatten_text(text)
+    if len(x) < 16 or len(x) > 650 or REF_HEADER.match(x) or UNUSED_HEADER.search(x):
+        return False
+    if 'doi.org/' in x.lower() or PMID_RE.search(x) or PMCID_RE.search(x) or DOI_RE.search(x):
+        return True
+    if _visible_url(x) and len(x) >= 30:
+        return True
+    if YEAR_RE.search(x) and len(x) >= 26:
+        return True
+    if re.search(r'\b(?:guidelines?|consensus statement|systematic review|randomized|meta.analysis|trial|journal|et al\.)\b', x, re.I) and len(x) > 40:
+        return True
+    return False
+
+
+def _plain_references(pages):
+    """Find actual reference entries without PDF annotations, not generic narrative claims."""
+    out = []
+    in_reference = False
+    in_unused = False
+    current = None
+
+    def flush():
+        nonlocal current
+        if current is not None and _plausible_reference(current['citation']):
+            out.append(current)
+        current = None
+
+    for page in pages:
+        lines = page_lines(page)
+        # A section can span pages; the next section heading terminates it.
+        for line in lines:
+            text, rect = line['text'], line['box']
+            if len(text) < 100 and UNUSED_HEADER.search(text):
+                flush(); in_reference = False; in_unused = True
+                continue
+            if len(text) < 100 and REF_HEADER.match(text):
+                flush(); in_reference = True; in_unused = False
+                continue
+            if in_unused:
+                continue
+            if in_reference and len(text) < 85 and STOP_HEADER.match(text):
+                flush(); in_reference = False
+                continue
+            if not in_reference:
+                # Explicit DOI/PMID/URL printed anywhere may be a source, but no
+                # stray URL should be treated as a full reference without context.
+                continue
+            start = LIST_START.match(text)
+            if start:
+                flush()
+                raw = start.group(4)
+                current = {'page': page.number+1, 'x': rect.x0, 'y': rect.y0,
+                           'citation': raw, 'url': _visible_url(raw),
+                           'kind': 'plain_reference', 'confidence': 'medium',
+                           'evidence': {'page': page.number+1, 'reference_label': text[:55]}}
+            elif current and (rect.y0-current.get('_last_y', rect.y1) < 33) and len(current['citation']) < 500:
+                # Continuation of a wrapped reference or title on the next line.
+                if text.lower() not in GENERIC_LINKS and not REF_HEADER.match(text):
+                    current['citation'] += ' ' + text
+                    if not current['url']:
+                        current['url'] = _visible_url(text)
+            elif _plausible_reference(text):
+                flush()
+                current = {'page': page.number+1, 'x': rect.x0, 'y': rect.y0,
+                           'citation': text, 'url': _visible_url(text),
+                           'kind': 'plain_reference', 'confidence': 'medium',
+                           'evidence': {'page': page.number+1, 'reference_label': text[:55]}}
+            if current is not None:
+                current['_last_y'] = rect.y1
+    flush()
+    for c in out:
+        c.pop('_last_y', None)
     return out
-
 
 
 def fallback_named_sources(pages):
-    """Conservative recovery when PDFs flattened all links; never add guessed URLs.
-
-    Only use explicit publication / guideline naming patterns from the actual export.
-    Ambiguous site labels like 'PMC +1' are not automatically counted as papers.
-    """
-    full=' '.join(page.get_text() for page in pages)
-    flat=flatten_text(full)
-    out=[]
-    # A named journal guideline with author + publication year in a prose citation.
-    for m in re.finditer(r'((?:First|Second|Third|Fourth|Fifth|Sixth) Consensus Guidelines\s+for\s+.{10,130}?\([^()]{8,120}?(?:19|20)\d{2}\))',flat,re.I):
-        out.append({'page':0,'x':0,'y':float(m.start()),'citation':m.group(1),'url':'','kind':'named_unlinked'})
-    # Guideline organizations appearing as explicit source names (not general clinical claims).
-    # These may be incomplete bibliography entries; human review is mandatory.
-    if 'The principal recommendations from recent guidelines are' in flat:
-        candidates=re.findall(r'(?:20\d{2})\s+(?:ACC/AHA|POQI consensus|ESAIC|Association of Anaesthetists)',flat,re.I)
-        seen=set()
-        for idx,item in enumerate(candidates):
-            if item not in seen:
-                out.append({'page':0,'x':0,'y':100000+idx,'citation':item,'url':'','kind':'named_unlinked'})
-                seen.add(item)
+    """Legacy conservative recovery for linkless prose citing explicit named sources."""
+    full = flatten_text(' '.join(p.get_text() for p in pages))
+    out = []
+    for m in re.finditer(r'((?:First|Second|Third|Fourth|Fifth|Sixth) Consensus Guidelines\s+for\s+.{10,130}?\([^()]{8,120}?(?:19|20)\d{2}\))', full, re.I):
+        out.append({'page': 0, 'x': 0, 'y': float(m.start()), 'citation': m.group(1),
+                    'url': '', 'kind': 'explicit_named', 'confidence': 'low'})
+    if 'The principal recommendations from recent guidelines are' in full:
+        for i, m in enumerate(re.finditer(r'(?:20\d{2})\s+(?:ACC/AHA|POQI consensus|ESAIC|Association of Anaesthetists)', full, re.I)):
+            if m.group(0) not in {x['citation'] for x in out}:
+                out.append({'page': 0, 'x': 0, 'y': 100000+i,
+                            'citation': m.group(0), 'url': '', 'kind': 'explicit_named', 'confidence': 'low'})
     return out
 
 
-def _parse_pages(pages, tool, q, path, api=None):
-        warnings=[]
-        links=extract_links(pages)
-        # For PDFs with an explicit references section, find unlinked entries as well.
-        unlinked=[]
-        for page in pages:
-            unlinked.extend(unlinked_reference_lines(page))
-        for u in unlinked:
-            if not any(g['page']==u['page'] and abs(g['y']-u['y'])<=7 for g in links):
-                # Avoid treating random text following a heading as a citation.
-                if len(u['citation'])>15 and len(u['citation'])<350 and not any(g['page']==u['page'] and \
-                     0 < u['y']-g['y'] < 30 and (g['citation'].endswith((',', ' and', ' of','Prediction,')) or \
-                       u['citation'].startswith(('Prevention,','Pain Management','Management'))) for g in links):
-                    links.append(u)
-        links.sort(key=lambda g:(g['page'],g['y'],g['x']))
-        if not links:
-            links.extend(fallback_named_sources(pages))
-        text='\n'.join(page.get_text(sort=True) for page in pages)
-        if re.search(r'\+\d+', text):
-            warnings.append('Collapsed +N citation labels found; verify any additional citations hidden by the export')
-        if api:
-            try:
-                returned=api.extract_citations(text, links, tool, q)
-                if returned:
-                    enriched=[]
-                    for item in returned:
-                        src=item.get('url','')
-                        if src and src!='NR' and src not in [g['url'] for g in links]:
-                            src='' # Model cannot invent / replace original URLs.
-                        raw=item.get('citation','')
-                        if raw and normalize(raw) not in normalize(text):
-                            # PDF line wrapping alters whitespace; reject out-of-text citations.
-                            if normalize(raw)[:35] not in normalize(text): continue
-                        enriched.append({'citation':raw,'url':src,'kind':'model','page':0,
-                                         'title':item.get('title','NR'), 'authors':item.get('authors','NR'),
-                                         'year':item.get('year','NR'),'journal':item.get('journal','NR')})
-                    if enriched:links=enriched
-            except Exception as exc:
-                warnings.append('AI extraction failed; used deterministic PDF links: '+str(exc)[:220])
-        if not links:
-            warnings.append('No extractable citations; PDF may have lost all source links')
-        elif not any(g.get('url') for g in links):
-            warnings.append('No clickable URLs found; extracted text-only references where possible')
-        if not any(g.get('url') for g in links) and not api:
-            warnings.append('Enable OPENAI_API_KEY to identify unlinked citations from narrative text')
-        # Preserve apparent references in order; never dedupe actual citation occurrences.
-        citations=[];seen=set()
-        for order, g in enumerate(links,1):
-            raw=flatten_text(g.get('citation',''))
-            url=g.get('url','')
-            rough=rough_fields(raw,url)
-            for field in ['title','authors','year','journal']:
-                if g.get(field) and g[field]!='NR':rough[field]=g[field]
-            doi,pmid=ids_as_shown(raw,url)
-            identity=(doi if doi!='NR' else pmid if pmid!='NR' else trim_tracking(url) or normalize(raw))
-            repeat='Y' if identity in seen else 'N';seen.add(identity)
-            citations.append({'tool':tool,'question':q,'order':order,'url':url or 'NR',
-                'repeat':repeat,**rough,'source_file':path.name,'source_page':g.get('page',0),
-                'extraction_method':g.get('kind','unknown')})
-        return citations,warnings
+def _matches_reference(a, b):
+    if a['page'] != b['page'] or abs(a['y']-b['y']) > 33:
+        return False
+    au = trim_tracking(a.get('url'))
+    bu = trim_tracking(b.get('url'))
+    if au and bu and au == bu:
+        return True
+    sa, sb = normalize(a['citation']), normalize(b['citation'])
+    return bool(sa and sb and (sa in sb or sb in sa) and min(len(sa), len(sb)) > 17)
+
+
+def _parse_pages(pages, tool, question, path, api=None):
+    warnings = []
+    annotations = extract_links(pages)
+    references = _plain_references(pages)
+    # Include uncaptured references, but never add the same entry once more
+    # simply because its URL appears as visible text and as PDF annotation.
+    found = list(annotations)
+    for ref in references:
+        matches = [a for a in annotations if _matches_reference(a, ref)]
+        if matches:
+            # Use reference list's full title, but preserve the original URI.
+            best = matches[0]
+            if len(ref['citation']) > len(best['citation']) and len(ref['citation']) < 600:
+                best['citation'] = ref['citation']
+            if not best.get('url') and ref.get('url'):
+                best['url'] = ref['url']
+            continue
+        found.append(ref)
+    found.sort(key=lambda x: (x['page'], x['y'], x['x']))
+    if not found:
+        found = fallback_named_sources(pages)
+    text = '\n'.join(p.get_text(sort=True) for p in pages)
+    text_n = normalize(text)
+    collapsed = re.findall(r'(?<!\w)\+\s*\d{1,3}(?!\w)', text)
+    if collapsed:
+        warnings.append(f'Collapsed +N source labels ({len(collapsed)}) found; expand hidden citations before finalizing')
+    if not text_n and not found:
+        warnings.append('PDF has no selectable text or URI links; OCR/manual export is required')
+    if api:
+        try:
+            proposed = api.extract_citations(text, found, tool, question)
+            allowed_urls = {r.get('url') for r in found if r.get('url')}
+            for item in proposed:
+                citation = flatten_text(item.get('citation', ''))
+                if not citation or len(normalize(citation)) < 20 or normalize(citation) not in text_n:
+                    continue
+                url = item.get('url', '')
+                if url not in allowed_urls:
+                    url = ''
+                candidate = {'page': 0, 'x': 0, 'y': len(found)*1000,
+                             'citation': citation, 'url': url,
+                             'kind': 'ai_transcribed', 'confidence': 'review',
+                             'evidence': {'source': 'exact PDF text'}}
+                if not any(_matches_reference(candidate, a) or normalize(a['citation']) == normalize(citation) for a in found):
+                    found.append(candidate)
+        except Exception as exc:
+            warnings.append('Optional AI extraction failed; deterministic sources kept: '+str(exc)[:150])
+    if not found:
+        warnings.append('No explicit citations recoverable; confirm original conversation and export format')
+    if not any(g.get('url') for g in found):
+        warnings.append('No clickable URLs found; no recoverable visible source URLs; review original export')
+    results = []
+    seen = set()
+    for n, entry in enumerate(found, 1):
+        raw = flatten_text(entry.get('citation', ''))
+        url = entry.get('url') or 'NR'
+        info = rough_fields(raw, url)
+        identity = info['doi'] if info['doi'] != 'NR' else info['pmid'] if info['pmid'] != 'NR' else trim_tracking(url) if url != 'NR' else normalize(raw)
+        repeated = 'Y' if identity in seen else 'N'
+        seen.add(identity)
+        results.append({'tool': tool, 'question': question, 'order': n,
+                        'url': url, 'repeat': repeated, **info,
+                        'source_file': path.name, 'source_page': entry.get('page', 0),
+                        'extraction_method': entry.get('kind', 'unknown'),
+                        'extraction_confidence': entry.get('confidence', 'review'),
+                        'evidence': entry.get('evidence') or {'page': entry.get('page', 0)}})
+    return results, warnings
+
+
+def _question_matches(text, questions):
+    normalized = normalize(text)
+    return [key for key, q in questions.items() if normalize(q) in normalized or (
+        len(normalize(q)) > 60 and normalize(q)[:65] in normalized)]
+
+
+QUESTION_HINTS = {
+    'Q01': ('ponv', 'postoperative nausea', 'nausea vomiting'),
+    'Q02': ('intraoperative hypotension', 'prevent hypotension', 'blood pressure management'),
+    'Q03': ('intraoperative hemorrhage', 'intraoperative haemorrhage', 'massive hemorrhage', 'massive haemorrhage'),
+    'Q04': ('last toxicity', 'local anesthetic systemic toxicity', 'local anaesthetic systemic toxicity'),
+    'Q05': ('difficult airway', 'awake tracheal intubation'),
+    'Q06': ('one lung ventilation', 'one-lung ventilation', 'olv hypoxemia', 'olv hypoxaemia'),
+    'Q07': ('cesarean anesthesia', 'caesarean anaesthesia', 'cesarean delivery'),
+    'Q08': ('acute kidney injury', 'aki risk', 'kidney injury prevention'),
+    'Q09': ('postoperative delirium', 'delirium risk'),
+    'Q10': ('tonsillectomy', 'recent upper respiratory infection', 'urti'),
+    'Q11': ('cabg', 'coronary artery bypass', 'volatile vs tiva', 'volatile anesthesia comparison'),
+    'Q12': ('intracranial pressure', 'craniotomy', 'elevated icp'),
+}
+
+
+def heuristic_question(filename, pages):
+    # Filename is a stronger signal than narrative content, which can mention
+    # other anesthetic subspecialties incidentally. Require one unambiguous hit.
+    for sample in (filename, ' '.join(p.get_text(sort=True)[:650] for p in pages[:1])):
+        tokenized = re.sub(r'[^a-z0-9]+', ' ', sample.lower()).strip()
+        matches = [code for code, hints in QUESTION_HINTS.items()
+                   if any(re.sub(r'[^a-z0-9]+', ' ', hint.lower()).strip() in tokenized for hint in hints)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def get_question_for_file(pages, questions, filename):
+    matches = _question_matches(' '.join(p.get_text() for p in pages[:2]), questions)
+    m = re.search(r'(?i)(?:^|[_\s\-.])Q\s*0?([1-9]|1[0-2])(?:[^0-9]|$)', filename)
+    if m:
+        key = f'Q{int(m.group(1)):02d}'
+        return key, (['Filename question differs from visible question; review mapping'] if matches and key not in matches else [])
+    if len(matches) == 1:
+        return matches[0], []
+    if len(matches) > 1:
+        return None, [f'Multiple questions detected {matches}; name file Q01_*.pdf or split exports']
+    fallback = heuristic_question(filename, pages)
+    if fallback:
+        return fallback, [f'Question {fallback} inferred from filename/heading keywords; confirm against actual study prompt']
+    return None, ['Cannot identify one of the 12 study questions; name file Q01_*.pdf, etc.']
 
 
 def parse_pdf(path, tool, questions, api=None):
-    path=Path(path)
+    path = Path(path)
     with fitz.open(str(path)) as doc:
-        pages=list(doc)
-        # Combined PDF export: identify each fresh question at the start of its first page.
-        # If two questions start on one page, export that conversation as separate PDFs.
-        changes=[]
-        for i,page in enumerate(pages):
-            beginning=normalize(page.get_text(sort=True)[:1300])
-            match=[]
-            for code,question in questions.items():
-                qn=normalize(question)
-                if qn in beginning:match.append(code)
-            if len(match)==1 and (not changes or changes[-1][1]!=match[0]):
-                changes.append((i,match[0]))
-        if len(changes)>1:
-            all_rows=[];warnings=[]
-            for index,(start,q) in enumerate(changes):
-                end=changes[index+1][0] if index+1<len(changes) else len(pages)
-                result,problems=_parse_pages(pages[start:end],tool,q,path,api)
-                all_rows.extend(result)
-                warnings.extend(f'{q}: {x}' for x in problems)
-            if changes[0][0]>0:warnings.append('Unassigned pages before first detected question were skipped')
-            return all_rows,warnings
-        q,warnings=get_question_for_file(pages,questions,path.stem)
-        if not q:return [],warnings
-        result,problems=_parse_pages(pages,tool,q,path,api)
-        return result,warnings+problems
+        if len(doc) == 0:
+            return [], ['Empty PDF']
+        if len(doc) > 500:
+            return [], ['PDF exceeds 500-page safety limit; split exports']
+        pages = list(doc)
+        changes = []
+        for i, page in enumerate(pages):
+            hits = _question_matches(page.get_text(sort=True)[:1600], questions)
+            if len(hits) == 1 and (not changes or hits[0] != changes[-1][1]):
+                changes.append((i, hits[0]))
+        if len(changes) > 1:
+            results, warnings = [], []
+            for i, (start, question) in enumerate(changes):
+                end = changes[i+1][0] if i+1 < len(changes) else len(pages)
+                group, w = _parse_pages(pages[start:end], tool, question, path, api)
+                results.extend(group)
+                warnings.extend(f'{question}: {msg}' for msg in w)
+            if changes[0][0] > 0:
+                warnings.append('Pages before the first question were not attributed')
+            return results, warnings
+        question, warnings = get_question_for_file(pages, questions, path.stem)
+        if not question:
+            return [], warnings
+        return_rows, extra = _parse_pages(pages, tool, question, path, api)
+        return return_rows, warnings+extra
