@@ -299,6 +299,71 @@ def _review_rows(rows, proposals, warnings):
     return queue
 
 
+SOURCE_RESEARCH_FIELDS = [
+    'tool','question','source_identity','citation_occurrences','citation_orders',
+    'contexts','as_cited_examples','original_urls','research_attempts',
+    'metadata_occurrences','informative_green_occurrences','green_written_occurrences',
+    'publication_titles','doi_candidates','pmid_candidates','review_priority','review_notes',
+]
+
+
+def _source_research_summary(rows, research):
+    """Summarize identities without deleting or adjudicating original occurrences."""
+    indexed = {(p['tool'],p['question'],int(p['order'])):p for p in research}
+    grouped = defaultdict(list)
+    for item in rows:
+        grouped[(item['tool'],item['question'],citation_identity(item))].append(item)
+
+    def unique(values, limit=1500):
+        seen = []
+        for value in values:
+            value = str(value or '').strip()
+            if value and value not in seen:
+                seen.append(value)
+        return ' | '.join(seen)[:limit]
+
+    result = []
+    for (tool,question,identity), items in grouped.items():
+        proposals = [indexed.get((tool,question,int(item['order']))) for item in items]
+        proposals = [p for p in proposals if p is not None]
+        good = [p for p in proposals if (p.get('informative_fields') or 0)>0]
+        written = [p for p in proposals if p.get('written_to_workbook')]
+        ids = [p.get('identifiers') or {} for p in proposals]
+        doi = {v['doi'] for v in ids if v.get('doi') not in (None,'','NR','NOT FOUND')}
+        pmid = {str(v['pmid']) for v in ids if v.get('pmid') not in (None,'','NR','NOT FOUND')}
+        has_conflict = len(doi)>1 or len(pmid)>1
+        weak = any(weak_visible_citation_label(x.get('citation',''),x.get('url','')) for x in items)
+        notes = []
+        if has_conflict:
+            notes.append('Conflicting proposed identifiers for the same source')
+        if not good:
+            notes.append('No substantive bibliographic fields recovered')
+        if weak:
+            notes.append('At least one short or domain-only visible source label')
+        notes += [note for p in proposals for note in (p.get('review_flags') or [])]
+        result.append({
+            'tool':tool,'question':question,'source_identity':identity,
+            'citation_occurrences':len(items),
+            'citation_orders':unique([item['order'] for item in items],500),
+            'contexts':unique([item.get('source_context') for item in items]),
+            'as_cited_examples':unique([item['citation'] for item in
+                                        sorted(items,key=lambda x:-len(x.get('citation','')))],1000),
+            'original_urls':unique([item.get('url') for item in items
+                                    if item.get('url') not in (None,'','NR')]),
+            'research_attempts':len(proposals),
+            'metadata_occurrences':sum(bool(p.get('has_metadata')) for p in proposals),
+            'informative_green_occurrences':len(good),
+            'green_written_occurrences':len(written),
+            'publication_titles':unique([(p.get('fields') or {}).get('Z') for p in proposals
+                                        if (p.get('fields') or {}).get('Z') not in (None,'','NR','NOT FOUND')]),
+            'doi_candidates':unique(sorted(doi)),
+            'pmid_candidates':unique(sorted(pmid)),
+            'review_priority':('High' if has_conflict or not good else 'Review'),
+            'review_notes':unique(notes,1500),
+        })
+    return result
+
+
 SOURCE_QUALITY_FIELDS = [
     'tool','question','citation_order','source_file','pdf_page',
     'original_citation','original_url','source_identity','source_context',
@@ -636,6 +701,8 @@ def main(argv=None):
     output = wb.save(args.output)
     audit = _research_audit(rows, research)
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
+    source_level = _source_research_summary(rows, research)
+    write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
     geography = _geography_review(rows, research, wb)
     write_csv(report_dir/'geography_review.csv', geography, GEOGRAPHY_REVIEW_FIELDS)
     queue = _review_rows(rows, research, warnings)
@@ -663,8 +730,10 @@ def main(argv=None):
             bool((doc.get('pdf_diagnostics') or {}).get('possible_image_only_export'))
             for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
-        'distinct_sources_within_questions': len({
-            (item['tool'],item['question'],citation_identity(item)) for item in rows}),
+        'distinct_sources_within_questions': len(source_level),
+        'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
+        'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
+        'distinct_sources_high_priority': sum(p['review_priority']=='High' for p in source_level),
         'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
         'explicit_bibliography_occurrences': sum(
             item.get('source_context') == 'bibliography' for item in rows),

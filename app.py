@@ -87,7 +87,7 @@ def result_zip(report_dir, workbook):
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
                      'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
-                     'geography_review.csv', 'source_quality_review.csv'):
+                     'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -196,6 +196,7 @@ if submit:
                             'research_audit': (reports/'research_audit.csv').read_bytes(),
                             'geography_review': (reports/'geography_review.csv').read_bytes(),
                             'source_quality': (reports/'source_quality_review.csv').read_bytes(),
+                            'source_level': (reports/'source_level_research.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -221,6 +222,12 @@ if result:
     )):
         cols[i].metric(title, value)
     st.caption('Green values counts substantive cell contents, not NR / NOT FOUND placeholders. All research values remain provisional until reviewed.')
+    if 'distinct_sources_researched' in report:
+        st.caption(
+            f"Unique-source analysis: {report['distinct_sources_researched']} source identities researched "
+            f"across {report['sources_researched']} citation occurrences; "
+            f"{report['distinct_sources_with_green']} distinct sources have substantive green data."
+        )
     if 'first_author_country_rows' in report:
         st.caption(
             f"Geographic outcome coverage: first-author country for "
@@ -270,6 +277,8 @@ if result:
             file_name='geography_review.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download citation source-quality review (CSV)', result['source_quality'],
             file_name='source_quality_review.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download unique-source research summary (CSV)', result['source_level'],
+            file_name='source_level_research.csv', mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])
