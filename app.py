@@ -118,6 +118,7 @@ with st.form('agent_form'):
                                    type=['pdf', 'zip'], accept_multiple_files=True,
                                    help='For mixed models, upload a ZIP with folders named CGP, CLG, GEM, OEV, etc. or use descriptive filenames.')
         wb_upload = st.file_uploader('Reviewed Excel workbook (optional for copying, required for research-only)', type=['xlsx'])
+        journal_upload = st.file_uploader('Optional verified SCImago / licensed 2026 JCR journal evidence CSV', type=['csv'])
         choices = list(model_options)+['AUTO']
         tool = st.selectbox('Which AI produced the responses?', choices,
             format_func=lambda c: 'Auto-detect model from PDF filename / ZIP folder' if c == 'AUTO' else f'{model_options[c]} ({c})')
@@ -157,6 +158,9 @@ if submit:
                     template = home/'template.xlsx'
                     template.write_bytes(wb_upload.getvalue() if wb_upload else DEFAULT_TEMPLATE.read_bytes())
                     output, reports = home/'filled.xlsx', home/'reports'
+                    if journal_upload is not None:
+                        journal_path = home/'journal_evidence.csv'
+                        journal_path.write_bytes(journal_upload.getvalue())
                     command = [sys.executable, str(ROOT/'run_agent.py'), 'run',
                                '--input', str(input_dir), '--template', str(template),
                                '--output', str(output), '--report-dir', str(reports),
@@ -164,6 +168,8 @@ if submit:
                                '--max-sources', str(max_sources)]
                     if tool != 'AUTO':
                         command.extend(['--tool', tool])
+                    if journal_upload is not None:
+                        command.extend(['--journal-evidence', str(journal_path)])
                     if offline:
                         command.append('--offline')
                     if no_ai:

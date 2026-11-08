@@ -15,7 +15,7 @@ class TestDownloadPersistence(TestCase):
         st = MagicMock()
         st.session_state = {}
         st.columns.side_effect = lambda spec: [MagicMock() for _ in range(spec if isinstance(spec, int) else len(spec))]
-        st.file_uploader.side_effect = [[SimpleNamespace(name='Q01_sample.pdf', getvalue=lambda: b'%PDF-example')], None] * 2
+        st.file_uploader.side_effect = [[SimpleNamespace(name='Q01_sample.pdf', getvalue=lambda: b'%PDF-example')], None, None] * 2
         st.selectbox.side_effect = ['CGP', 'blue', 'verified-only'] * 2
         st.checkbox.return_value = True
         st.number_input.return_value = 10

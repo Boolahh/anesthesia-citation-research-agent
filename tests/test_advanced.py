@@ -276,3 +276,52 @@ class HumanReviewTests(TestCase):
             rows=load_review_csv(form)
             self.assertEqual(rows[0]['verdict'],'')
             self.assertEqual(rows[0]['citation_as_shown'],'Citation A')
+
+
+class VerifiedSourcePriorityTests(TestCase):
+    def test_human_verified_source_url_overrides_wrong_cited_identifier(self):
+        from run_agent import _original_rows
+        from agent.workbook import set_value
+        wb = TemplateWorkbook(TEMPLATE)
+        row = wb.upsert_blue({'tool':'CGP','question':'Q11','order':1,
+            'citation':'Original wrong cited DOI','url':'https://doi.org/10.1234/wrong',
+            'title':'Source title','authors':'NR','year':'2023','journal':'NR',
+            'doi':'10.1234/wrong','pmid':'NR','repeat':'N'})
+        set_value(wb.data_rows[row], 'X', 'https://doi.org/10.5678/correct')
+        result = _original_rows(wb)[0]
+        self.assertTrue(result['source_url_verified'])
+        self.assertEqual(result['doi'], '10.1234/wrong')  # Original remains as-cited.
+        with tempfile.TemporaryDirectory() as d:
+            engine = Bibliography(wb.data.countries, d, offline=True)
+            with patch.object(engine, 'fetch_json', return_value=None), patch.object(engine, 'public_page', return_value=None):
+                evidence = engine.metadata(result)
+        self.assertEqual(evidence['doi'], '10.5678/correct')
+        self.assertTrue(any('Original cited DOI differs' in msg for msg in evidence['match']['warnings']))
+
+
+class LicensedJournalEvidenceTests(TestCase):
+    def test_verified_scimago_country_and_licensed_jcr_evidence(self):
+        from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
+        wb=TemplateWorkbook(TEMPLATE)
+        with tempfile.TemporaryDirectory() as d:
+            file=Path(d)/'journal.csv'
+            file.write_text('journal_name,country,scimago_url,impact_factor_2026,jcr_evidence_id,date_checked\n'
+                'Clinical Safety Journal,Canada,https://www.scimagojr.com/journalsearch.php?q=999,3.2,JCR-2026-licensed-export-row-42,2026-11-01\n')
+            entries=load_journal_evidence(file,wb.data.countries)
+            ev={}
+            result=supplement_journal_fields({'AD':'Journal article','BA':'Clinical Safety Journal','BB':'NOT FOUND','BE':''},ev,entries,wb.data.countries)
+            self.assertEqual(result['BB'],'Canada')
+            self.assertEqual(result['BC'],'Region of the Americas')
+            self.assertEqual(result['BE'],'3.2')
+            self.assertIn('SCImago',ev['field_provenance']['BB']['source'])
+            self.assertIn('2026 Journal Citation Reports',ev['field_provenance']['BE']['source'])
+
+    def test_journal_evidence_missing_provenance_rejected(self):
+        from agent.journal_evidence import load_journal_evidence
+        wb=TemplateWorkbook(TEMPLATE)
+        with tempfile.TemporaryDirectory() as d:
+            file=Path(d)/'journal.csv'
+            file.write_text('journal_name,country,scimago_url,impact_factor_2026,jcr_evidence_id,date_checked\n'
+                'Clinical Journal,Canada,,5.2,,2026-11-01\n')
+            with self.assertRaises(ValueError):
+                load_journal_evidence(file,wb.data.countries)

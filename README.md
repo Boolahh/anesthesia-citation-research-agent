@@ -47,7 +47,7 @@ The system now reads PubMed XML **author by author**. It refuses to assign an in
 
 ### Unavailable or licensed research fields
 
-Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
+Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Investigators may optionally import a documented, locally held journal evidence CSV (see `docs/JOURNAL_EVIDENCE.md`) to populate these fields with source provenance, **without scraping licensed services**. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
 
 ## CLI reference (one-line commands from the project root)
 
@@ -58,6 +58,7 @@ python run_agent.py scan --input inputs --no-ai --offline
 python run_agent.py run --stage blue --input inputs --output outputs/blue.xlsx --no-ai --offline
 python run_agent.py run --stage all --input inputs --output outputs/provisional.xlsx --max-sources 10 --green-policy provisional --no-ai
 python run_agent.py run --stage research --template outputs/reviewed.xlsx --output outputs/researched.xlsx --green-policy verified-only --max-sources 30 --no-ai
+python run_agent.py run --stage research --template outputs/reviewed.xlsx --output outputs/researched.xlsx --journal-evidence outputs/licensed_journal_evidence.csv --no-ai
 ```
 
 To process a single model whose filenames have no platform identifier, pass `--tool OEV` (or another exact tool code). For mixed models, use subfolders, e.g. `inputs/CGP/Q01.pdf`, `inputs/GEM/Q01.pdf`. For one question per file, include its question code (`Q01_...pdf`) if the prompt text is missing. A *combined* PDF can be detected when each full new question begins on a new page. If several questions share one page, split the PDF first rather than allowing the agent to guess.
