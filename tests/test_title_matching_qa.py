@@ -2,10 +2,10 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from agent.research import Bibliography, citation_title_similarity
-from agent.workbook import TemplateWorkbook
+from agent.workbook import TemplateWorkbook, GREEN_COLS
 from run_agent import enrich, _research_audit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +88,46 @@ class ResearchTitleQualityTests(TestCase):
                  **result, 'written_to_workbook': False}])
             self.assertEqual(report[0]['research_status'],
                              'metadata_without_informative_fields')
+
+    def test_online_first_year_difference_flagged_without_invalidating_source(self):
+        engine = Mock()
+        engine.metadata.return_value = {
+            'pubmed': {'online_year': '2025', 'pmid': '12345678'},
+            'match': {'warnings': []},
+            'review_flags': [],
+            'lookup_events': [],
+            'source_url': 'https://pubmed.ncbi.nlm.nih.gov/12345678/',
+            'doi': '10.1234/example', 'pmid': '12345678',
+        }
+        engine.baseline_green.return_value = {
+            **{c: 'NR' for c in GREEN_COLS}, 'AA': '2026',
+            'Z': 'Synthetic online-first study'
+        }
+        outcome = enrich({'year': '2025', 'title': 'Synthetic online-first study'},
+                         self.workbook, engine, None)
+        self.assertTrue(any('online-first publication year' in f
+                            for f in outcome['review_flags']))
+        self.assertTrue(outcome['can_autowrite'])
+        self.assertFalse(any('Wrong year' in f
+                             for f in outcome['review_flags']))
+
+    def test_guideline_version_year_difference_requires_review_not_error(self):
+        engine = Mock()
+        engine.metadata.return_value = {
+            'pubmed': {'online_year': '2025', 'pmid': '12345678'},
+            'match': {'warnings': []},
+            'review_flags': [],
+            'lookup_events': [],
+        }
+        engine.baseline_green.return_value = {
+            **{c: 'NR' for c in GREEN_COLS}, 'AA': '2025',
+            'AD': 'Guideline', 'Z': '2024 Synthetic practice guidelines'
+        }
+        outcome = enrich({'year': '2024', 'title': '2024 Synthetic practice guidelines'},
+                         self.workbook, engine, None)
+        self.assertTrue(any('guideline-version' in f
+                            for f in outcome['review_flags']))
+        self.assertTrue(outcome['can_autowrite'])
 
     def test_html_entities_are_unescaped_in_publication_fields(self):
         with TemporaryDirectory() as folder:

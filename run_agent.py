@@ -194,6 +194,22 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     proposed = bibliography.baseline_green(evidence)
     warnings = list(evidence.get('match', {}).get('warnings') or []) + list(evidence.get('review_flags') or [])
     match = evidence.get('match', {})
+    # A guideline's title year and an article's online-first year often differ
+    # from its journal issue year. Flag the discrepancy for a reviewer, but
+    # never autonomously classify it as a citation error.
+    blue_year = str(citation.get('year') or '').strip()
+    issue_year = str(proposed.get('AA') or '').strip()
+    if (re.fullmatch(r'(?:19|20)\d{2}', blue_year)
+            and re.fullmatch(r'(?:19|20)\d{2}', issue_year)
+            and blue_year != issue_year):
+        online_year = str((evidence.get('pubmed') or {}).get('online_year') or '').strip()
+        context = ('original year matches the online-first publication year'
+                   if online_year == blue_year else
+                   'may reflect a guideline-version year or online-first date')
+        warnings.append(
+            f'As-cited year {blue_year} differs from journal issue year {issue_year}; '
+            f'{context}. Reviewer must determine whether this is an actual citation error.'
+        )
     if ai and any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')):
         source_context = {k: evidence.get(k) for k in ('doi', 'pmid', 'crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')}
         guidelines = '\n'.join(workbook.data.prompts.get(n, '') for n in range(44, 88))
