@@ -173,6 +173,13 @@ def explicit_source_type_from_published_title(title):
         return 'Guideline'
     if re.search(r'\b(?:joint )?consensus (?:statement|report|recommendations)\b', value):
         return 'Consensus statement'
+    # The workbook has no separate Practice Advisory category. Official
+    # clinical practice advisories are systematic recommendations, not
+    # primary clinical studies. Map to Guideline as a *provisional* study
+    # category and require reviewer confirmation of the classification.
+    if re.search(r'\bpractice advisory for (?:perioperative|anesthesia|anaesthesia|'
+                 r'management|clinical|preoperative|postoperative)\b', value):
+        return 'Guideline'
     return ''
 
 
@@ -763,7 +770,9 @@ class Bibliography:
         elif title_type:
             put('AD', title_type, 'independently retrieved publication title', pm_url or cr_url or oa_url,
                 'explicit guideline/consensus source title, not inferred from as-cited wording')
-            review_flags.append('Guideline/consensus source type inferred from official title; verify classification')
+            review_flags.append('Guideline/consensus source type inferred from official title; verify classification'
+                                + (' (practice advisory mapped to study Guideline category)'
+                                   if 'practice advisory' in str(first).lower() else ''))
         elif ctype in ('journal-article', 'article', 'review', 'research-article', 'journal article') or pm:
             put('AD', 'Journal article', 'PubMed / Crossref / OpenAlex', pm_url or cr_url or oa_url)
         elif ctype in ('book', 'book-chapter', 'book-section'):

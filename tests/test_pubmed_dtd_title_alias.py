@@ -98,6 +98,9 @@ class PubmedDtdAndTitleTests(TestCase):
             'Consensus statement')
         self.assertEqual(explicit_source_type_from_published_title(
             'Scoping review of guidelines for improving anesthesia safety'), '')
+        self.assertEqual(explicit_source_type_from_published_title(
+            '2025 American Society of Anesthesiologists Practice Advisory for Perioperative Care of Older Adults Scheduled for Inpatient Surgery'),
+            'Guideline')
         with TemporaryDirectory() as folder:
             engine = Bibliography(self.wb.data.countries, folder, offline=True)
             record = {'doi': '10.1234/synthetic', 'pmid': '12345678',

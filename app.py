@@ -218,6 +218,13 @@ if result:
     )):
         cols[i].metric(title, value)
     st.caption('Green values counts substantive cell contents, not NR / NOT FOUND placeholders. All research values remain provisional until reviewed.')
+    if 'first_author_country_rows' in report:
+        st.caption(
+            f"Geographic outcome coverage: first-author country for "
+            f"{report['first_author_country_rows']}/{report['citations_extracted']} citations; "
+            f"last-author country for {report.get('last_author_country_rows', 0)}/"
+            f"{report['citations_extracted']}. Provisional country matches require human verification."
+        )
     if report.get('research_truncated_by_limit'):
         st.warning(
             f"Research stopped at your limit of {report.get('publication_lookup_limit')}. "
