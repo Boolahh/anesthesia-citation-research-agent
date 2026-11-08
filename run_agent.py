@@ -27,6 +27,7 @@ except ImportError:
 from agent.workbook import TemplateWorkbook, GREEN_COLS
 from agent.pdf_extract import parse_pdf
 from agent.research import Bibliography, quality
+from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
 APP_VERSION = '2.0.0'
@@ -185,7 +186,7 @@ def refine_green(green, workbook):
     return green
 
 
-def enrich(citation, workbook, bibliography, ai):
+def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     evidence = bibliography.metadata(citation)
     proposed = bibliography.baseline_green(evidence)
     warnings = list(evidence.get('match', {}).get('warnings') or []) + list(evidence.get('review_flags') or [])
@@ -214,8 +215,10 @@ def enrich(citation, workbook, bibliography, ai):
         except Exception as exc:
             warnings.append('Optional AI coding failed: '+str(exc)[:160])
     proposed = refine_green(proposed, workbook)
+    if journal_evidence:
+        proposed = supplement_journal_fields(proposed, evidence, journal_evidence, workbook.data.countries)
     has_metadata = any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
-    critical = any('conflicts with' in msg for msg in warnings)
+    critical = any('conflicts with' in msg or 'differs materially' in msg for msg in warnings)
     return {
         'fields': proposed, 'has_metadata': has_metadata,
         'can_autowrite': has_metadata and not critical,
@@ -263,9 +266,11 @@ def _original_rows(workbook):
     result = []
     for (tool, question, order), excel_row in sorted(workbook.existing.items()):
         d = workbook.get_row(excel_row)
-        preferred = d.get('X') if d.get('X') not in ('', 'NR', 'NOT FOUND') else d.get('E')
+        is_verified = d.get('X') not in ('', 'NR', 'NOT FOUND')
+        preferred = d.get('X') if is_verified else d.get('E')
         result.append({'tool': tool, 'question': question, 'order': order,
                        'citation': d.get('D', ''), 'url': preferred or 'NR',
+                       'source_url_verified': is_verified,
                        'title': d.get('F', ''), 'authors': d.get('G', ''),
                        'year': d.get('H', ''), 'journal': d.get('I', ''),
                        'doi': d.get('J', ''), 'pmid': d.get('K', ''),
@@ -290,6 +295,7 @@ def main(argv=None):
     ap.add_argument('--max-sources', type=int, default=0)
     ap.add_argument('--max-docs', type=int, default=0)
     ap.add_argument('--contact-email', default=os.getenv('RESEARCH_CONTACT_EMAIL', ''))
+    ap.add_argument('--journal-evidence', help='Optional investigator-verified SCImago and licensed 2026 JCR CSV')
     args = ap.parse_args(argv)
     if args.max_sources < 0 or args.max_docs < 0:
         ap.error('max-sources/max-docs must be nonnegative')
@@ -335,6 +341,7 @@ def main(argv=None):
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline)
+        journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
         attempts = 0
         for item in rows:
             if args.max_sources and attempts >= args.max_sources:
@@ -354,8 +361,13 @@ def main(argv=None):
                 continue
             attempts += 1
             record = {'tool': key[0], 'question': key[1], 'order': key[2], 'row': rownum}
+            # A previously reviewed workbook can also be used in combined mode.
+            # Research from its human verified X link; do not mutate blue E/J.
+            reviewed = wb.get_row(rownum).get('X', '')
+            lookup_item = ({**item, 'url': reviewed, 'source_url_verified': True}
+                           if reviewed not in ('', 'NR', 'NOT FOUND') else item)
             try:
-                info = enrich(item, wb, bibliography, ai)
+                info = enrich(lookup_item, wb, bibliography, ai, journal_database)
                 record.update(info)
                 written = bool(info['can_autowrite'] and wb.upsert_green(rownum,
                     [info['fields'][k] for k in GREEN_COLS], args.green_policy))
@@ -395,6 +407,7 @@ def main(argv=None):
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
         'review_queue_items': len(queue),
         'green_cells_policy': args.green_policy, 'stages': args.stage,
+        'investigator_journal_evidence_used': bool(args.journal_evidence),
         'ai_used': bool(ai), 'offline': args.offline,
         'tools_detected': {k: sorted(v) for k,v in tool_coverage.items()},
         'warning_count': len(warnings)+len(wb.warnings),

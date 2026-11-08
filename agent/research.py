@@ -266,8 +266,12 @@ class Bibliography:
         if url == 'NR':
             url = ''
         raw = citation.get('citation') or ''
-        doi = normalize_doi(citation.get('doi')) or normalize_doi(url) or normalize_doi(raw)
-        pmid = str(citation.get('pmid') or '')
+        # A human-supplied, independently verified X URL overrides original
+        # as-cited DOI/PMID text, which can itself contain the study's errors.
+        verified_url = bool(citation.get('source_url_verified'))
+        doi = (normalize_doi(url) if verified_url else
+               (normalize_doi(citation.get('doi')) or normalize_doi(url) or normalize_doi(raw)))
+        pmid = '' if verified_url else str(citation.get('pmid') or '')
         if not pmid.isdigit():
             m = re.search(r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})', url, re.I)
             pmid = m.group(1) if m else ''
@@ -315,8 +319,10 @@ class Bibliography:
             if doi and not oa:
                 oa_candidate = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
                 oa = oa_candidate if oa_candidate and oa_candidate.get('id') else None
-        match = {'method': 'identifier' if doi or pmid else 'none', 'status': 'review_required',
-                 'title_similarity': None, 'warnings': []}
+        match = {'method': 'reviewer_verified_URL' if verified_url else 'identifier' if doi or pmid else 'none',
+                 'status': 'review_required', 'title_similarity': None, 'warnings': []}
+        if verified_url and citation.get('doi') not in ('', 'NR', None) and doi and normalize_doi(citation.get('doi')) != doi:
+            match['warnings'].append('Original cited DOI differs from reviewer verified URL; preserve citation error for protocol')
         # Do not turn free-form names such as "NEJM, 2019" into title searches.
         title = citation.get('title') or ''
         title_words = re.findall(r'[A-Za-z]{3,}', title)
@@ -347,6 +353,8 @@ class Bibliography:
             oa = None
         actual_title = (pubmed or {}).get('title') or (oa or {}).get('display_name') or \
                        ((cross or {}).get('title') or [''])[0] or (europe or {}).get('title') or ''
+        if (oa or {}).get('is_retracted') or any('retract' in x.lower() for x in ((pubmed or {}).get('publication_types') or [])):
+            match['warnings'].append('Publication flagged retracted; independent verification required')
         if actual_title and title and len(title_words) >= 5:
             match['title_similarity'] = round(quality(title, actual_title), 3)
             if match['title_similarity'] < .65:
@@ -434,6 +442,16 @@ class Bibliography:
                           'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
                           'Professional society or organization webpage'):
             put('AE', 'Not a research study (guideline, textbook, website...)', 'type-based coding', pm_url or cr_url)
+        elif any('randomized controlled trial' in x or 'randomised controlled trial' in x for x in publication_types):
+            put('AE', 'Randomized controlled trial', 'PubMed publication type', pm_url)
+        elif any('meta-analysis' in x or 'meta analysis' in x for x in publication_types) and any('systematic review' in x or 'meta-analysis' in x or 'meta analysis' in x for x in publication_types):
+            put('AE', 'Systematic review with meta-analysis', 'PubMed publication type', pm_url)
+        elif any('systematic review' in x for x in publication_types):
+            put('AE', 'Systematic review (no meta-analysis)', 'PubMed publication type', pm_url)
+        elif any('case reports' in x or 'case report' in x for x in publication_types):
+            put('AE', 'Case series or case report', 'PubMed publication type', pm_url)
+        elif any(x in ('editorial', 'letter', 'comment') for x in publication_types):
+            put('AE', 'Editorial, commentary or letter', 'PubMed publication type', pm_url)
         else:
             # Never automatically classify study designs from a title alone.
             rows['AE'] = 'NR'
