@@ -157,6 +157,25 @@ def _safe_pubmed_xml(body):
     return body
 
 
+def explicit_source_type_from_published_title(title):
+    """Classify only overt publication self-descriptions, not papers ABOUT guidelines.
+
+    PubMed may label an authored practice guideline as "Review". A retrieved
+    bibliographic title is permissible provisional evidence for that source
+    type; a human reviewer still owns final study coding.
+    """
+    value = ' '.join(str(title or '').split()).strip().lower()
+    if re.match(r'^(?:a |an |the )?(?:systematic |narrative |scoping |critical )?'
+                r'(?:review|overview|assessment|comparison|evaluation|analysis) of\b', value):
+        return ''
+    if re.search(r'\b(?:practice|clinical practice|evidence[- ]based|consensus[- ]based)\s+guidelines?\b'
+                 r'|\bguidelines?\s*(?::|(?:for|on|of)\b)', value):
+        return 'Guideline'
+    if re.search(r'\b(?:joint )?consensus (?:statement|report|recommendations)\b', value):
+        return 'Consensus statement'
+    return ''
+
+
 def normalize_doi(s):
     m = DOI_RE.search(unquote(str(s or '')))
     return m.group().rstrip('.,;)').lower() if m else ''
@@ -707,10 +726,15 @@ class Bibliography:
         put('AC', evidence.get('pmid') or 'NR', 'PubMed identifier', pm_url)
         publication_types = [x.lower() for x in pm.get('publication_types') or []]
         ctype = (cr.get('type') or oa.get('type') or '').lower()
+        title_type = explicit_source_type_from_published_title(first)
         if any('guideline' in x or 'practice guideline' in x for x in publication_types):
             put('AD', 'Guideline', 'PubMed publication type', pm_url)
         elif any('consensus' in x for x in publication_types):
             put('AD', 'Consensus statement', 'PubMed publication type', pm_url)
+        elif title_type:
+            put('AD', title_type, 'independently retrieved publication title', pm_url or cr_url or oa_url,
+                'explicit guideline/consensus source title, not inferred from as-cited wording')
+            review_flags.append('Guideline/consensus source type inferred from official title; verify classification')
         elif ctype in ('journal-article', 'article', 'review', 'research-article', 'journal article') or pm:
             put('AD', 'Journal article', 'PubMed / Crossref / OpenAlex', pm_url or cr_url or oa_url)
         elif ctype in ('book', 'book-chapter', 'book-section'):

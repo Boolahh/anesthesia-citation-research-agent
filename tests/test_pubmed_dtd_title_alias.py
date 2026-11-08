@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from agent.research import (
     Bibliography, _safe_pubmed_xml, citation_title_similarity,
-    descriptive_source_label,
+    descriptive_source_label, explicit_source_type_from_published_title,
 )
 from agent.workbook import TemplateWorkbook
 
@@ -85,6 +85,35 @@ class PubmedDtdAndTitleTests(TestCase):
         self.assertTrue(descriptive_source_label('Meta-analysis of 36 randomized CABG trials'))
         self.assertFalse(descriptive_source_label(
             'Effects of volatile anesthetics on mortality and outcomes after cardiac surgery'))
+
+    def test_published_guideline_and_consensus_titles_set_source_type(self):
+        self.assertEqual(explicit_source_type_from_published_title(
+            '2022 American Society of Anesthesiologists Practice Guidelines for Management of the Difficult Airway'),
+            'Guideline')
+        self.assertEqual(explicit_source_type_from_published_title(
+            'Association of Anaesthetists guidelines: the use of blood components and their alternatives'),
+            'Guideline')
+        self.assertEqual(explicit_source_type_from_published_title(
+            'Postoperative acute kidney injury in adult non-cardiac surgery: joint consensus report of the Acute Disease Quality Initiative'),
+            'Consensus statement')
+        self.assertEqual(explicit_source_type_from_published_title(
+            'Scoping review of guidelines for improving anesthesia safety'), '')
+        with TemporaryDirectory() as folder:
+            engine = Bibliography(self.wb.data.countries, folder, offline=True)
+            record = {'doi': '10.1234/synthetic', 'pmid': '12345678',
+                'openalex': None, 'crossref': {'type': 'journal-article'},
+                'europepmc': None, 'public_page': None, 'source_url': '',
+                'pubmed': {
+                    'pmid': '12345678', 'year': '2022', 'year_basis': 'PubMed issue date',
+                    'title': '2022 American Society of Anesthesiologists Practice Guidelines for Management of the Difficult Airway',
+                    'publication_types': ['Review'], 'authors': [], 'journal': 'Anesthesiology',
+                },
+            }
+            fields = engine.baseline_green(record)
+            self.assertEqual(fields['AD'], 'Guideline')
+            self.assertEqual(fields['AE'], 'Not a research study (guideline, textbook, website...)')
+            self.assertIn('publication title', record['field_provenance']['AD']['source'])
+            self.assertTrue(any('verify classification' in x for x in record['review_flags']))
 
     def test_pubmed_followup_after_strict_title_only_crossref_doi_match(self):
         article = {'title': [PAPER_TITLE], 'DOI': '10.1234/synthetic-guideline'}
