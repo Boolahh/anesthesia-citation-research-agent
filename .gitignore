@@ -26,3 +26,6 @@ htmlcov/
 
 # Runtime logs
 *.log
+
+# Auto-extracted research workbook; tracked in compressed form
+template/*.xlsx
