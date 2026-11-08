@@ -104,7 +104,57 @@ def citation_title_similarity(as_cited_title, original_reference, retrieved_titl
     search_hint = title_search_hint(as_cited_title)
     if search_hint:
         score = max(score, quality(search_hint, retrieved_title))
+    phrase_words, phrase_chars = _best_shared_title_phrase(original_reference, retrieved_title)
+    if phrase_words >= 4 and phrase_chars >= 30 and score < .85:
+        # An abbreviated citation can share a meaningful sequence without
+        # matching the publication's full title. Retain human review.
+        return .85, 'substantial shared title phrase; abbreviated label requires review'
     return score, 'as-cited title similarity'
+
+
+def _best_shared_title_phrase(cited, retrieved):
+    """Length of the longest contiguous word phrase shared by source labels.
+
+    A long shared phrase indicates the as-cited title may be abbreviated.
+    This is not independent proof of bibliographic source identity.
+    """
+    left = re.findall(r'[a-z0-9]+', str(cited or '').casefold())[:120]
+    right = re.findall(r'[a-z0-9]+', str(retrieved or '').casefold())[:120]
+    best = []
+    for i in range(len(left)):
+        for j in range(len(right)):
+            k = 0
+            while i+k < len(left) and j+k < len(right) and left[i+k] == right[j+k]:
+                k += 1
+            if k > len(best):
+                best = left[i:i+k]
+    return len(best), len(' '.join(best))
+
+
+def descriptive_source_label(label):
+    """A short descriptive summary is not the full bibliographic title."""
+    plain = re.sub(r'^\s*(?:\[\d+\]|\d+[).])\s*', '', str(label or '')).strip()
+    return (len(re.findall(r'[A-Za-z]{3,}', plain)) <= 9 and bool(re.match(
+        r'^(?:a\s+)?(?:meta[- ]analysis|systematic review|randomized trial|'
+        r'randomised trial|clinical overview|overview)\b', plain, re.I)))
+
+
+def _safe_pubmed_xml(body):
+    """Remove PubMed's standard external DTD without enabling entity expansion.
+
+    Accept only NLM PubmedArticleSet publication DTD declarations; reject
+    arbitrary/custom entities and other DOCTYPEs. PubMed XML parsing never
+    needs an external DTD fetch.
+    """
+    if re.search(r'<!ENTITY\b', body, re.I):
+        raise ValueError('PubMed XML included an entity declaration')
+    body = re.sub(
+        r'<!DOCTYPE\s+PubmedArticleSet\s+PUBLIC\s+["\x27][^"\x27]+["\x27]\s+'
+        r'["\x27]https://dtd\.nlm\.nih\.gov/ncbi/pubmed/out/[^"\x27]+\.dtd["\x27]\s*>',
+        '', body, count=1, flags=re.I)
+    if re.search(r'<!DOCTYPE\b', body, re.I):
+        raise ValueError('Unexpected PubMed XML document type')
+    return body
 
 
 def normalize_doi(s):
@@ -368,11 +418,14 @@ class Bibliography:
         body = self._get('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi',
                          {'db': 'pubmed', 'id': pmid, 'retmode': 'xml', 'tool': 'anesthesia-citation-agent',
                           **({'email': self.email} if self.email else {})}, 'application/xml')
-        if body and '<!DOCTYPE' not in body[:1000] and '<!ENTITY' not in body[:1000]:
+        if body:
             try:
-                return parse_pubmed_xml(body)
-            except ET.ParseError:
-                self.events.append({'url': 'NCBI PubMed EFetch', 'status': 'invalid_xml'})
+                parsed = parse_pubmed_xml(_safe_pubmed_xml(body))
+                if parsed:
+                    return parsed
+            except (ET.ParseError, ValueError):
+                pass
+            self.events.append({'url': 'NCBI PubMed EFetch', 'status': 'invalid_xml'})
         return None
 
     def metadata(self, citation):
@@ -518,6 +571,20 @@ class Bibliography:
                 match['warnings'].append('Title-only PubMed match requires human verification')
             elif matches:
                 match['warnings'].append('PubMed title search ambiguous; no record accepted')
+        # Title-only Crossref matches can produce a DOI after the initial
+        # DOI-to-PubMed lookup. Recover PubMed issue date, source type and
+        # author-specific affiliations using that newly discovered DOI.
+        if doi and not pmid and not pubmed and match['method'] == 'high_similarity_title_candidate':
+            found = self.fetch_json('https://www.ebi.ac.uk/europepmc/webservices/rest/search',
+                                    {'query': 'DOI:'+doi, 'format': 'json', 'pageSize': 2})
+            for candidate in ((found or {}).get('resultList') or {}).get('result') or []:
+                if (normalize_doi(candidate.get('doi')) == doi
+                        and candidate.get('source') == 'MED'
+                        and str(candidate.get('id') or '').isdigit()):
+                    pmid = str(candidate['id'])
+                    europe = candidate
+                    pubmed = self._pubmed(pmid)
+                    break
         if cross and doi:
             cross_doi = normalize_doi(cross.get('DOI'))
             if cross_doi and cross_doi != doi:
@@ -536,7 +603,12 @@ class Bibliography:
             similarity, basis = citation_title_similarity(title, raw, actual_title)
             match['title_similarity'] = round(similarity, 3)
             match['title_match_basis'] = basis
-            if match['title_similarity'] < .65:
+            if 'abbreviated label' in basis:
+                match['warnings'].append('Abbreviated citation title shares a substantial phrase; independently verify full title')
+            elif match['title_similarity'] < .65 and descriptive_source_label(raw):
+                match['title_match_basis'] = 'descriptive label, not a complete publication title'
+                match['warnings'].append('Descriptive citation label; title cannot be independently confirmed from original wording')
+            elif match['title_similarity'] < .65:
                 match['warnings'].append('Original cited title differs materially from retrieved publication; manually compare')
         elif actual_title:
             match['warnings'].append('Original title insufficient to confirm publication match')
