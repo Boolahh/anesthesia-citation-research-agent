@@ -28,7 +28,7 @@ from .workbook import GREEN_COLS
 USER_AGENT = 'AnesthesiaCitationBiasResearchAgent/2.0 (evidence-traceable, human-verified)'
 MAX_RESPONSE = 2_000_000
 TRUSTED_BIBLIO_HOSTS = {'api.crossref.org', 'api.openalex.org', 'www.ebi.ac.uk',
-                        'eutils.ncbi.nlm.nih.gov'}
+                        'eutils.ncbi.nlm.nih.gov', 'pmc.ncbi.nlm.nih.gov'}
 
 
 def public_dns_destination(url):
@@ -88,6 +88,25 @@ def normalize_doi(s):
     return m.group().rstrip('.,;)').lower() if m else ''
 
 
+def title_search_hint(as_cited):
+    """Extract a *query hint*, never alter the original blue citation text.
+
+    Model answers sometimes append a bibliographic note after the real title,
+    e.g. `Fourth Consensus Guidelines ... (Gan et al., A&A, 2020)`.
+    Searching the entire text can miss the true DOI or match an unrelated work.
+    A title search remains a review-required candidate, not an identity verdict.
+    """
+    value = ' '.join(str(as_cited or '').split())
+    value = re.sub(r'^\s*(?:\[\d+\]|\d+[).])\s*', '', value)
+    value = re.sub(r'^\s*(?:key|selected|main|primary)\s+references\s*:\s*', '', value, flags=re.I)
+    # Only remove a trailing parenthesis that clearly looks bibliographic, not
+    # legitimate title parentheses such as (PONV) or (LAST).
+    value = re.sub(r'\s*\([^()]{4,160}\b(?:19|20)\d{2}\)\s*$', '', value)
+    value = re.sub(r'\s*(?:doi|pmid)\s*:\s*\S+\s*$', '', value, flags=re.I)
+    value = value.strip(' .:;\"\u201c\u201d')
+    return value if 25 <= len(value) <= 240 and len(re.findall(r'[A-Za-z]{3,}', value)) >= 7 else ''
+
+
 def iso2_country(code, countries):
     if not code:
         return 'NR', 'NR', 'NR'
@@ -144,6 +163,32 @@ def parse_pubmed_xml(xml_text):
             if value and value not in affiliations:
                 affiliations.append(value)
         people.append({'name': name, 'group': bool(collective), 'affiliations': affiliations})
+    # PubMed sometimes repeats one composite paragraph containing *all*
+    # authors' labelled institutions inside every Author/AffiliationInfo.
+    # Such a paragraph is NOT evidence that each person belongs to all of
+    # those universities (e.g. Callum/Barkun/Karkouti affiliations in CMAJ).
+    # Preserve a diagnostic; suppress institution assignment until a person
+    # has a genuinely individual address or an investigator reviews the text.
+    affiliation_diagnostics = []
+    reuse = {}
+    for author in people:
+        for affiliation in author['affiliations']:
+            reuse[affiliation] = reuse.get(affiliation, 0) + 1
+    for author in people:
+        remaining = []
+        for affiliation in author['affiliations']:
+            segments = [x.strip() for x in affiliation.split(';') if x.strip()]
+            group_labels = re.findall(r'\([A-Za-z][A-Za-z -]{1,35}\)', affiliation)
+            is_composite = (reuse.get(affiliation, 0) >= 2 and len(segments) > 1 and
+                            (len(group_labels) >= 2 or
+                             sum(bool(re.search(r'\b(?:department|division|university|hospital|centre|center)\b', x, re.I))
+                                 for x in segments) >= 2))
+            if is_composite:
+                if affiliation not in affiliation_diagnostics:
+                    affiliation_diagnostics.append(affiliation)
+            else:
+                remaining.append(affiliation)
+        author['affiliations'] = remaining
     identifiers = {}
     for idnode in article.findall('PubmedData/ArticleIdList/ArticleId'):
         key, value = idnode.get('IdType'), _node_text(idnode)
@@ -159,6 +204,7 @@ def parse_pubmed_xml(xml_text):
         'year_basis': 'PubMed journal issue date' if issue_year else 'PubMed electronic publication date' if online_year else 'not reported',
         'journal': _node_text(journal.find('Title')) if journal is not None else '',
         'authors': people,
+        'shared_affiliation_blocks': affiliation_diagnostics,
         'publication_types': [_node_text(x) for x in paper.findall('PublicationTypeList/PublicationType')],
     }
 
@@ -265,6 +311,27 @@ class Bibliography:
         results = ((data or {}).get('resultList') or {}).get('result') or []
         return results[0] if results else None
 
+    def _convert_pmc(self, pmcid):
+        """Use the official PMC ID converter if Europe PMC cannot link a PMCID.
+
+        This endpoint yields *identifiers only*; it does not prove that the AI
+        title or the human source-verification verdict is correct.
+        https://pmc.ncbi.nlm.nih.gov/tools/id-converter-api/
+        """
+        if not re.fullmatch(r'PMC\d{5,10}', str(pmcid or ''), re.I):
+            return None
+        params = {'ids': pmcid.upper(), 'format': 'json', 'tool': 'anesthesia-citation-agent'}
+        if self.email:
+            params['email'] = self.email
+        data = self.fetch_json('https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/', params)
+        records = (data or {}).get('records') or []
+        for record in records:
+            if str(record.get('pmcid', '')).upper() == pmcid.upper() and 'errmsg' not in record:
+                value = str(record.get('pmid') or '')
+                return {'pmcid': pmcid.upper(), 'pmid': value if value.isdigit() else '',
+                        'doi': normalize_doi(record.get('doi'))}
+        return None
+
     def _pubmed(self, pmid):
         if not pmid:
             return None
@@ -289,25 +356,51 @@ class Bibliography:
         # A human-supplied, independently verified X URL overrides original
         # as-cited DOI/PMID text, which can itself contain the study's errors.
         verified_url = bool(citation.get('source_url_verified'))
-        doi = (normalize_doi(url) if verified_url else
-               (normalize_doi(citation.get('doi')) or normalize_doi(url) or normalize_doi(raw)))
-        pmid = '' if verified_url else str(citation.get('pmid') or '')
-        if not pmid.isdigit():
-            m = re.search(r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})', url, re.I)
-            pmid = m.group(1) if m else ''
-        pmc = re.search(r'\bPMC\d{5,10}\b', url, re.I)
-        europe = self._europe(pmid, pmc.group() if pmc else '') if pmid or pmc else None
+        issue_flags = []
+        original_doi = normalize_doi(citation.get('doi')) or normalize_doi(raw)
+        url_doi = normalize_doi(url)
+        url_pmid_match = re.search(
+            r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)', url, re.I)
+        url_pmid = url_pmid_match.group(1) if url_pmid_match else ''
+        original_pmid = str(citation.get('pmid') or '')
+        original_pmid = original_pmid if original_pmid.isdigit() else ''
+        if url_doi and original_doi and url_doi != original_doi:
+            issue_flags.append('Original cited DOI conflicts with hyperlink DOI')
+        if url_pmid and original_pmid and url_pmid != original_pmid:
+            issue_flags.append('Original cited PMID conflicts with hyperlink PMID')
+        # The actual link's identifier takes priority for retrieval, but neither
+        # conflicting blue field is altered in the original study workbook.
+        doi = url_doi or ('' if verified_url else original_doi)
+        pmid = url_pmid or ('' if verified_url else original_pmid)
+        pmc_match = re.search(r'\bPMC\d{5,10}\b', url, re.I)
+        pmc = pmc_match.group().upper() if pmc_match else ''
+        europe = self._europe(pmid, pmc) if pmid or pmc else None
+        converted = self._convert_pmc(pmc) if pmc else None
+        if converted:
+            converted_doi, converted_pmid = converted['doi'], converted['pmid']
+            if doi and converted_doi and doi != converted_doi:
+                issue_flags.append('Original cited DOI conflicts with PMC identifier conversion')
+            if pmid and converted_pmid and pmid != converted_pmid:
+                issue_flags.append('Original cited PMID conflicts with PMC identifier conversion')
+            doi = converted_doi or doi
+            pmid = converted_pmid or pmid
         if europe:
-            doi = doi or normalize_doi(europe.get('doi'))
+            europe_doi = normalize_doi(europe.get('doi'))
+            if doi and europe_doi and doi != europe_doi:
+                issue_flags.append('Original cited DOI conflicts with Europe PMC record')
+            doi = (converted or {}).get('doi') or europe_doi or doi
             if not pmid and europe.get('source') == 'MED':
                 pmid = str(europe.get('id') or '')
         pubmed = self._pubmed(pmid) if pmid else None
         if pubmed:
-            doi = doi or pubmed.get('doi', '')
+            pubmed_doi = pubmed.get('doi') or ''
+            if doi and pubmed_doi and doi != pubmed_doi:
+                issue_flags.append('Original cited DOI conflicts with PubMed record')
+            doi = pubmed_doi or doi
         cross = None
         oa = None
         if doi and not pmid:
-            # Even DOI-only citations can be linked to author-specific PubMed XML.
+            # DOI-only citations may still have author-specific PubMed evidence.
             europe_doi = self.fetch_json('https://www.ebi.ac.uk/europepmc/webservices/rest/search',
                                          {'query': 'DOI:'+doi, 'format': 'json', 'pageSize': 2})
             for article in ((europe_doi or {}).get('resultList') or {}).get('result') or []:
@@ -340,27 +433,62 @@ class Bibliography:
                 oa_candidate = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
                 oa = oa_candidate if oa_candidate and oa_candidate.get('id') else None
         match = {'method': 'reviewer_verified_URL' if verified_url else 'identifier' if doi or pmid else 'none',
-                 'status': 'review_required', 'title_similarity': None, 'warnings': []}
+                 'status': 'review_required', 'title_similarity': None, 'warnings': list(issue_flags)}
         if verified_url and citation.get('doi') not in ('', 'NR', None) and doi and normalize_doi(citation.get('doi')) != doi:
             match['warnings'].append('Original cited DOI differs from reviewer verified URL; preserve citation error for protocol')
         # Do not turn free-form names such as "NEJM, 2019" into title searches.
         title = citation.get('title') or ''
         title_words = re.findall(r'[A-Za-z]{3,}', title)
-        if not cross and not oa and not pubmed and not doi and len(title_words) >= 7 and 25 <= len(title) <= 240:
+        search_hint = title_search_hint(title)
+        if not cross and not oa and not pubmed and not doi and search_hint:
             result = self.fetch_json('https://api.crossref.org/works',
-                                     {'query.title': title, 'rows': 2})
+                                     {'query.title': search_hint, 'rows': 3})
             items = ((result or {}).get('message') or {}).get('items') or []
-            candidate = items[0] if items else None
-            if candidate and quality(title, (candidate.get('title') or [''])[0]) >= .94:
+            scored = sorted(((quality(search_hint, (it.get('title') or [''])[0]), it)
+                             for it in items), key=lambda x: x[0], reverse=True)
+            # Multiple near-identical editions or a preprint plus journal
+            # article must never silently resolve to the first search hit.
+            if scored and scored[0][0] >= .94 and (len(scored) == 1 or
+                                                   scored[0][0] - scored[1][0] >= .035):
+                candidate = scored[0][1]
                 cross = candidate
                 doi = normalize_doi(candidate.get('DOI'))
                 if doi:
                     oa_candidate = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
                     oa = oa_candidate if oa_candidate and oa_candidate.get('id') else None
                 match['method'] = 'high_similarity_title_candidate'
-                match['warnings'].append('Title search candidate must be verified against original source')
-            elif candidate:
-                match['warnings'].append('Title search ambiguous; no bibliographic candidate accepted')
+                match['warnings'].append('Title-only Crossref result is provisional; verify source identity')
+            elif scored:
+                match['warnings'].append('Crossref title search returned ambiguous or weak matches')
+        # For clinical articles, PubMed's exact-title search can recover a
+        # missing PMID/DOI when Crossref has no unambiguous candidate.
+        if not cross and not oa and not pubmed and not doi and search_hint:
+            query = self.fetch_json('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi',
+                                    {'db':'pubmed', 'term':f'"{search_hint}"[Title]',
+                                     'retmode':'json', 'retmax':3,
+                                     **({'email':self.email} if self.email else {})})
+            ids = ((query or {}).get('esearchresult') or {}).get('idlist') or []
+            matches = []
+            for possible_id in ids[:3]:
+                if not str(possible_id).isdigit():
+                    continue
+                candidate = self._pubmed(str(possible_id))
+                if candidate and candidate.get('title'):
+                    matches.append((quality(search_hint, candidate['title']), candidate))
+            matches.sort(key=lambda x:x[0], reverse=True)
+            if matches and matches[0][0] >= .96 and (len(matches) == 1 or
+                                                     matches[0][0] - matches[1][0] >= .035):
+                pubmed = matches[0][1]
+                pmid = str(pubmed.get('pmid') or '')
+                doi = pubmed.get('doi') or ''
+                if doi:
+                    cross = (self.fetch_json('https://api.crossref.org/works/'+quote(doi, safe='/')) or {}).get('message')
+                    a = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
+                    oa = a if a and a.get('id') else None
+                match['method'] = 'exact_title_pubmed_candidate'
+                match['warnings'].append('Title-only PubMed match requires human verification')
+            elif matches:
+                match['warnings'].append('PubMed title search ambiguous; no record accepted')
         if cross and doi:
             cross_doi = normalize_doi(cross.get('DOI'))
             if cross_doi and cross_doi != doi:
@@ -381,28 +509,56 @@ class Bibliography:
                 match['warnings'].append('Original cited title differs materially from retrieved publication; manually compare')
         elif actual_title:
             match['warnings'].append('Original title insufficient to confirm publication match')
+        if issue_flags:
+            match['status'] = 'identifier_conflict'
+        elif match['method'] in ('high_similarity_title_candidate','exact_title_pubmed_candidate'):
+            match['status'] = 'title_candidate_unverified'
         return {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
                 'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
                 'source_url': url if safe_url(url) else '', 'match': match,
                 'lookup_events': list(self.events), 'lookup_performed': not self.offline}
 
     def _affiliation_country(self, text):
-        """Only literal country names/codes in a *specific author's* affiliation."""
-        value = str(text or '')
+        """Classify only a terminal, explicit country in one author's address.
+
+        Do not assume that "University of Georgia" is in the country Georgia,
+        nor that a publisher/city/institution establishes country. State,
+        province and institution names are NOT reliable country evidence.
+        """
+        value = ' '.join(str(text or '').split()).strip(' .;')
         if not value:
             return 'NR', 'NR', 'NR'
-        # Limit this to explicit country tokens, not city/institution assumptions.
-        for candidate in sorted(self.countries.values(), key=lambda c: len(c.get('name', '')), reverse=True):
-            country = candidate.get('name') or ''
-            if country and re.search(r'(?<![a-z])'+re.escape(country)+r'(?![a-z])', value, re.I):
-                return country, candidate.get('region') or 'NR', candidate.get('income') or 'NR'
-        aliases = {'USA': 'United States', 'U.S.A.': 'United States', 'UK': 'United Kingdom',
-                   'U.K.': 'United Kingdom'}
-        for alias, full in aliases.items():
-            if re.search(r'(?<![a-z])'+re.escape(alias)+r'(?![a-z])', value, re.I):
-                match = next((c for c in self.countries.values() if c.get('name') == full), None)
-                if match:
-                    return full, match.get('region') or 'NR', match.get('income') or 'NR'
+        # Institutional addresses conventionally finish with a country. Use
+        # the final comma/semicolon component; a trailing postal code can
+        # follow the literal country and is removed only when unambiguous.
+        suffix = re.split(r'[,;]', value)[-1].strip(' .')
+        aliases = {
+            'usa': 'United States', 'u.s.a.': 'United States',
+            'united states of america': 'United States',
+            'uk': 'United Kingdom', 'u.k.': 'United Kingdom',
+            'great britain': 'United Kingdom',
+        }
+        lookup = {str(x['name']).lower(): x for x in self.countries.values() if x.get('name')}
+        stripped = re.sub(r'\s+[0-9]{4,6}$', '', suffix).strip(' .').lower()
+        target = aliases.get(stripped, stripped)
+        entry = lookup.get(target)
+        if entry and target not in ('georgia',):
+            return entry['name'], entry.get('region') or 'NR', entry.get('income') or 'NR'
+        # Accept a full country name at the end of an unpunctuated affiliation
+        # if it is clearly a terminal geographic designation. Never treat a
+        # country name within "University of ..." as location evidence.
+        for country_name, candidate in sorted(lookup.items(), key=lambda p: -len(p[0])):
+            if (country_name != 'georgia' and
+                    re.search(r'(?<![a-z])'+re.escape(country_name)+r'\s*$', value, re.I) and
+                    not re.search(r'\b(?:university|college|institute|school) of\s+'+
+                                  re.escape(country_name)+r'\s*$', value, re.I)):
+                return candidate['name'], candidate.get('region') or 'NR', candidate.get('income') or 'NR'
+        # Alias at the final word of an unpunctuated address, e.g. "... UK".
+        for token, name in aliases.items():
+            if re.search(r'(?<![a-z])'+re.escape(token)+r'\s*$', value, re.I):
+                item = lookup.get(name.lower())
+                if item:
+                    return item['name'], item.get('region') or 'NR', item.get('income') or 'NR'
         return 'NR', 'NR', 'NR'
 
     def baseline_green(self, evidence):
@@ -415,6 +571,8 @@ class Bibliography:
         rows = {c: 'NR' for c in GREEN_COLS}
         provenance = {}
         review_flags = []
+        if pm.get('shared_affiliation_blocks'):
+            review_flags.append('PubMed has a multi-author composite affiliation; institutions withheld pending author-level review')
 
         def put(col, value, source, url='', reason=''):
             if value is None or value == '':

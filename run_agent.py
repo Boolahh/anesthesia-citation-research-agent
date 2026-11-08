@@ -30,7 +30,7 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.0.0'
+APP_VERSION = '2.1.0'
 
 
 def write_json(path, payload):
@@ -265,6 +265,60 @@ def _review_rows(rows, proposals, warnings):
     return queue
 
 
+RESEARCH_AUDIT_FIELDS = [
+    'tool','question','order','excel_row','original_citation','original_url',
+    'research_status','publication_title','research_doi','research_pmid',
+    'informative_green_fields','metadata_sources','review_reasons',
+]
+
+
+def _research_audit(rows, proposals):
+    """One traceable status per citation, including those skipped by the cap.
+
+    This is a reviewer-facing index, NOT a replacement for field-level
+    provenance in research_proposals.json or a human verification decision.
+    """
+    proposals_by_key = {(p['tool'], p['question'], int(p['order'])): p for p in proposals}
+    result = []
+    for citation in rows:
+        key = (citation['tool'], citation['question'], int(citation['order']))
+        proposed = proposals_by_key.get(key)
+        status = 'not_researched'
+        if proposed:
+            if proposed.get('error'):
+                status = 'lookup_error'
+            elif not proposed.get('has_metadata'):
+                status = 'metadata_unavailable'
+            elif not proposed.get('can_autowrite', False):
+                status = 'identity_conflict_or_ambiguous_source'
+            elif proposed.get('written_to_workbook'):
+                status = 'written_provisional_or_reviewer_gated'
+            else:
+                status = 'proposed_only_human_verification_required'
+        fields = proposed.get('fields') or {} if proposed else {}
+        meaningful = sum(v not in (None, '', 'NR', 'NOT FOUND', 'Not applicable')
+                         for v in fields.values()) if proposed and proposed.get('has_metadata') else 0
+        sources = sorted({v.get('source', '') for v in (proposed.get('field_provenance') or {}).values()
+                          if isinstance(v, dict) and v.get('source')}) if proposed else []
+        reasons = proposed.get('review_flags') or [] if proposed else []
+        if proposed and proposed.get('error'):
+            reasons = list(reasons) + [str(proposed['error'])[:250]]
+        result.append({
+            'tool':key[0], 'question':key[1], 'order':key[2],
+            'excel_row': citation.get('excel_row') or (proposed or {}).get('row',''),
+            'original_citation':citation.get('citation',''),
+            'original_url':citation.get('url',''),
+            'research_status':status,
+            'publication_title':fields.get('Z',''),
+            'research_doi':(proposed or {}).get('identifiers',{}).get('doi',''),
+            'research_pmid':(proposed or {}).get('identifiers',{}).get('pmid',''),
+            'informative_green_fields':meaningful,
+            'metadata_sources':'; '.join(sources),
+            'review_reasons':'; '.join(str(x) for x in reasons[:12]),
+        })
+    return result
+
+
 def _original_rows(workbook):
     result = []
     for (tool, question, order), excel_row in sorted(workbook.existing.items()):
@@ -395,6 +449,8 @@ def main(argv=None):
         # Avoid leaving a previous run's unrelated proposals in reused folders.
         write_json(report_dir/'research_proposals.json', [])
     output = wb.save(args.output)
+    audit = _research_audit(rows, research)
+    write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     queue = _review_rows(rows, research, warnings)
     write_csv(report_dir/'review_queue.csv', queue,
         ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
@@ -405,10 +461,15 @@ def main(argv=None):
         'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
         'input_documents': documents, 'citations_extracted': len(rows),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
-        'sources_researched': len(research),
+        'sources_researched': len(research),  # candidates evaluated; may run fully offline
+        'external_lookup_successes': sum(
+            sum(event.get('status') == 'ok' for event in item.get('lookup_events', []))
+            for item in research),
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
         'review_queue_items': len(queue),
+        'sources_with_identity_conflicts': sum(x['research_status'] == 'identity_conflict_or_ambiguous_source' for x in audit),
+        'informative_green_cells_proposed': sum(x['informative_green_fields'] for x in audit),
         'green_cells_policy': args.green_policy, 'stages': args.stage,
         'investigator_journal_evidence_used': bool(args.journal_evidence),
         'ai_used': bool(ai), 'offline': args.offline,
