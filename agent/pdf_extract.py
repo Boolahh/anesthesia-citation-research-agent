@@ -96,10 +96,14 @@ def text_for_link(page, lines, boxes):
     # surrounding medical advice is the publication title.
     if re.fullmatch(r'(?:\[?\d{1,3}\]?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+)', anchor.strip()):
         return anchor.strip()
-    if (len(anchor) < 12 or anchor.lower() in GENERIC_LINKS) and idx:
+    # A generic linked phrase on its *own* numbered reference line still
+    # belongs to that line. Only borrow preceding text for a genuinely short
+    # wrapped continuation (e.g. "Full" at the end of a line, "article" below).
+    if idx and len(original) < 35 and (len(anchor) < 12 or anchor.lower() in GENERIC_LINKS):
         prior = lines[idx-1]
-        if abs(prior['box'].y1-lines[idx]['box'].y0) < 17 and (
-            LIST_START.match(prior['text']) or len(original) < 35):
+        if (not LIST_START.match(original)
+                and 0 <= lines[idx]['box'].y0-prior['box'].y1 < 17
+                and lines[idx]['box'].x0 > prior['box'].x0 + 6):
             original = prior['text']+' '+original
     if idx+1 < len(lines):
         nxt = lines[idx+1]
@@ -281,9 +285,18 @@ def _parse_pages(pages, tool, question, path, api=None):
     for ref in references:
         matches = [a for a in annotations if _matches_reference(a, ref)]
         if matches:
-            # Use reference list's full title, but preserve the original URI.
+            # Never replace a high-confidence single link label with a plain-
+            # text block that spans *multiple* different linked references.
+            # This happens when HTML-to-PDF places consecutive references on
+            # neighboring baselines without numbering or blank lines.
             best = matches[0]
-            if len(ref['citation']) > len(best['citation']) and len(ref['citation']) < 600:
+            ref_label = normalize(ref['citation'])
+            other_sources = [a for a in annotations if a is not best
+                             and a['page'] == ref['page']
+                             and len(normalize(a['citation'])) >= 22
+                             and normalize(a['citation']) in ref_label]
+            if (not other_sources and len(ref['citation']) > len(best['citation'])
+                    and len(ref['citation']) < 600):
                 best['citation'] = ref['citation']
             if not best.get('url') and ref.get('url'):
                 best['url'] = ref['url']
