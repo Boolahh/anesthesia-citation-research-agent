@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
 import re
 
@@ -45,6 +45,54 @@ def ids_as_shown(text, url):
     if not pmid:
         pmid = re.search(r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)', str(url), re.I)
     return doi.group().rstrip('.,;)') if doi else 'NR', pmid.group(1) if pmid else 'NR'
+
+
+def citation_identity(citation):
+    """Normalize a single bibliographic identity without changing as-cited URLs.
+
+    PMID/PMCID links from alternative NCBI hosts identify one source. Query
+    parameters with real resource identifiers (e.g. WordPress ?p=1234) must
+    be retained; only common tracking parameters may be dropped.
+    """
+    url = str(citation.get('url') or '')
+    citation_text = str(citation.get('citation') or '')
+    doi = DOI_RE.search(unquote(url)) or DOI_RE.search(citation_text)
+    if doi:
+        return 'doi:'+doi.group().rstrip('.,;)').casefold()
+    pmid = re.search(
+        r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)',
+        url, re.I)
+    pmid = pmid or PMID_RE.search(citation_text)
+    if pmid:
+        return 'pmid:'+pmid.group(1)
+    pmcid = PMCID_RE.search(unquote(url)) or PMCID_RE.search(citation_text)
+    if pmcid:
+        return 'pmcid:'+pmcid.group().upper()
+    if url and url != 'NR':
+        parts = urlsplit(url)
+        host = (parts.hostname or '').lower().removeprefix('www.')
+        path = unquote(parts.path or '/').rstrip('/') or '/'
+        tracking = ('utm_', 'fbclid', 'gclid', 'mc_cid', 'mc_eid', 'ref_', 'source')
+        query = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                       if not any(k.lower().startswith(prefix) for prefix in tracking))
+        return 'url:'+host+path+('?' + urlencode(query) if query else '')
+    return 'text:'+normalize(citation_text)
+
+
+def weak_visible_citation_label(label, url=''):
+    """Identify linked labels that are insufficient as bibliographic titles.
+
+    A domain badge like 'nysora', 'nih', or two-word phrase cannot be assumed
+    to be the actual publication title. Preserve it, but lower extraction
+    confidence for explicit reviewer attention.
+    """
+    label = flatten_text(label).strip(' .:;,')
+    if not url or url == 'NR' or not label:
+        return False
+    if DOI_RE.search(label) or PMID_RE.search(label) or YEAR_RE.search(label):
+        return False
+    words = re.findall(r'[A-Za-z]{2,}', label)
+    return len(label) < 28 and len(words) <= 3
 
 
 def rough_fields(text, url):
@@ -173,10 +221,13 @@ def extract_links(pages):
                 rect = cluster[0]
                 if _section_for_position(lines, rect.y0, carry_section) == 'unused':
                     continue
+                label = text_for_link(page, lines, cluster)
                 groups.append({'page': page.number + 1, 'y': rect.y0,
                                'x': rect.x0, 'url': uri,
-                               'citation': text_for_link(page, lines, cluster),
-                               'kind': 'pdf_link', 'confidence': 'high',
+                               'citation': label,
+                               'kind': 'pdf_link',
+                               'confidence': ('review' if weak_visible_citation_label(label, uri)
+                                              else 'high'),
                                'evidence': {'page': page.number+1, 'uri_annotation': uri}})
         if lines:
             carry_section = _section_for_position(lines, lines[-1]['box'].y1, carry_section)
@@ -361,7 +412,7 @@ def _parse_pages(pages, tool, question, path, api=None):
         raw = flatten_text(entry.get('citation', ''))
         url = entry.get('url') or 'NR'
         info = rough_fields(raw, url)
-        identity = info['doi'] if info['doi'] != 'NR' else info['pmid'] if info['pmid'] != 'NR' else trim_tracking(url) if url != 'NR' else normalize(raw)
+        identity = citation_identity({**info, 'url': url})
         repeated = 'Y' if identity in seen else 'N'
         seen.add(identity)
         results.append({'tool': tool, 'question': question, 'order': n,

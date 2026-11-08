@@ -38,6 +38,7 @@ class TestDownloadPersistence(TestCase):
             (reports / 'review_queue.csv').write_text('tool,question,reason\nCGP,Q01,example\n')
             (reports / 'research_audit.csv').write_text('tool,question,research_status\nCGP,Q01,not_researched\n')
             (reports / 'geography_review.csv').write_text('tool,question,review_priority\nCGP,Q01,High\n')
+            (reports / 'source_quality_review.csv').write_text('tool,question,review_priority\nCGP,Q01,High\n')
             (reports / 'run_report.json').write_text(json.dumps({
                 'citations_extracted': 1,
                 'sources_researched': 0,
@@ -60,15 +61,15 @@ class TestDownloadPersistence(TestCase):
                  patch('subprocess.run', side_effect=fake_process), \
                  patch.object(Path, 'read_bytes', read_bytes):
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 7)
+                self.assertEqual(st.download_button.call_count, 8)
                 self.assertEqual(len(ran), 1)
                 self.assertEqual(st.session_state['latest_result']['workbook'], b'filled-xlsx-for-testing')
                 # A click on a download button reruns the Streamlit app,
                 # but does not resubmit the form or delete its saved output.
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 14)
+                self.assertEqual(st.download_button.call_count, 16)
                 self.assertEqual(len(ran), 1)
-                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-7:]]
-                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv', 'geography_review.csv'])
+                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-8:]]
+                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv', 'geography_review.csv', 'source_quality_review.csv'])
         finally:
             sys.path.remove(str(ROOT))

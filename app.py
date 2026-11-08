@@ -87,7 +87,7 @@ def result_zip(report_dir, workbook):
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
                      'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
-                     'geography_review.csv'):
+                     'geography_review.csv', 'source_quality_review.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -195,6 +195,7 @@ if submit:
                             'citation_preview': preview, 'review_queue': review,
                             'research_audit': (reports/'research_audit.csv').read_bytes(),
                             'geography_review': (reports/'geography_review.csv').read_bytes(),
+                            'source_quality': (reports/'source_quality_review.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -226,6 +227,14 @@ if result:
             f"{report['first_author_country_rows']}/{report['citations_extracted']} citations; "
             f"last-author country for {report.get('last_author_country_rows', 0)}/"
             f"{report['citations_extracted']}. Provisional country matches require human verification."
+        )
+    if report.get('short_or_generic_source_labels'):
+        st.warning(
+            f"Citation evidence needs review: {report['short_or_generic_source_labels']} "
+            f"short/domain-only link labels among {report['citations_extracted']} citation occurrences. "
+            f"The report identifies {report.get('distinct_sources_within_questions', '?')} "
+            f"distinct source identities within questions. Review source_quality_review.csv "
+            f"before treating occurrence counts as unique scholarly references."
         )
     if report.get('research_truncated_by_limit'):
         st.warning(
@@ -259,6 +268,8 @@ if result:
             file_name='research_audit.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download first-author geography review (CSV)', result['geography_review'],
             file_name='geography_review.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download citation source-quality review (CSV)', result['source_quality'],
+            file_name='source_quality_review.csv', mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])

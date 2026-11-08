@@ -7,7 +7,7 @@ platforms, resumable batch research, and auditable study data.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import argparse
@@ -25,7 +25,8 @@ except ImportError:
     pass
 
 from agent.workbook import TemplateWorkbook, GREEN_COLS
-from agent.pdf_extract import parse_pdf, inspect_unresolved_pdf
+from agent.pdf_extract import (parse_pdf, inspect_unresolved_pdf,
+                               citation_identity, weak_visible_citation_label)
 from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
@@ -171,7 +172,7 @@ def gather(args, workbook, ai):
         seen = set()
         for i, citation in enumerate(grouped[key], 1):
             citation['order'] = i
-            identity = citation['doi'] if citation['doi'] != 'NR' else citation['pmid'] if citation['pmid'] != 'NR' else citation['url'] if citation['url'] != 'NR' else citation['citation']
+            identity = citation_identity(citation)
             citation['repeat'] = 'Y' if identity in seen else 'N'
             seen.add(identity)
             result.append(citation)
@@ -296,6 +297,47 @@ def _review_rows(rows, proposals, warnings):
                           'pdf_page': '', 'original_citation': '', 'original_url': '',
                           'priority': 'High', 'reason': warning.get('warning', '')})
     return queue
+
+
+SOURCE_QUALITY_FIELDS = [
+    'tool','question','citation_order','source_file','pdf_page',
+    'original_citation','original_url','source_identity',
+    'occurrences_of_source_in_question','short_or_generic_label',
+    'extraction_confidence','repeat_occurrence','review_priority','review_reason',
+]
+
+
+def _source_quality_review(rows):
+    """Audit citation *occurrences* separately from unique source identities."""
+    identity_counts = Counter(
+        (item['tool'], item['question'], citation_identity(item)) for item in rows)
+    output = []
+    for item in rows:
+        ident = citation_identity(item)
+        num = identity_counts[(item['tool'], item['question'], ident)]
+        weak = weak_visible_citation_label(item.get('citation', ''), item.get('url', ''))
+        notes = []
+        if weak:
+            notes.append('Short/domain-only linked label is not a full bibliographic citation')
+        if num > 1:
+            notes.append(f'{num} occurrences of the same source identity; verify citation occurrence count')
+        if item.get('extraction_confidence') in ('review','low'):
+            notes.append('PDF extraction needs human review')
+        if item.get('url') in ('','NR',None):
+            notes.append('Original PDF lacks a recoverable linked URL')
+        output.append({
+            'tool': item['tool'], 'question': item['question'],
+            'citation_order': item['order'], 'source_file': item.get('source_file',''),
+            'pdf_page': item.get('source_page',''), 'original_citation': item['citation'],
+            'original_url': item.get('url',''), 'source_identity': ident,
+            'occurrences_of_source_in_question': num,
+            'short_or_generic_label': 'Y' if weak else 'N',
+            'extraction_confidence': item.get('extraction_confidence',''),
+            'repeat_occurrence': item.get('repeat',''),
+            'review_priority': ('High' if weak and num>=3 else 'Review' if notes else 'Low'),
+            'review_reason': '; '.join(notes),
+        })
+    return output
 
 
 GEOGRAPHY_REVIEW_FIELDS = [
@@ -509,6 +551,8 @@ def main(argv=None):
     write_csv(report_dir/'citation_preview.csv', rows,
         ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
          'source_file','source_page','extraction_method','extraction_confidence','pdf_sha256'])
+    source_review = _source_quality_review(rows)
+    write_csv(report_dir/'source_quality_review.csv', source_review, SOURCE_QUALITY_FIELDS)
     if args.command == 'scan':
         write_json(report_dir/'scan_report.json', {'documents': documents, 'citations': len(rows), 'warnings': warnings})
         queue = _review_rows(rows, [], warnings)
@@ -617,6 +661,13 @@ def main(argv=None):
             bool((doc.get('pdf_diagnostics') or {}).get('possible_image_only_export'))
             for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
+        'distinct_sources_within_questions': len({
+            (item['tool'],item['question'],citation_identity(item)) for item in rows}),
+        'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
+        'short_or_generic_source_labels': sum(
+            item['short_or_generic_label'] == 'Y' for item in source_review),
+        'high_priority_source_quality_rows': sum(
+            item['review_priority'] == 'High' for item in source_review),
         'sources_researched': len(research),  # candidates evaluated; may run fully offline
         'eligible_sources_for_research': researchable_count,
         'publication_lookup_limit': args.max_sources,  # 0 = all
