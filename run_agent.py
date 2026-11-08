@@ -25,7 +25,7 @@ except ImportError:
     pass
 
 from agent.workbook import TemplateWorkbook, GREEN_COLS
-from agent.pdf_extract import parse_pdf
+from agent.pdf_extract import parse_pdf, inspect_unresolved_pdf
 from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
@@ -141,8 +141,22 @@ def gather(args, workbook, ai):
             citation['pdf_sha256'] = digest
             per_question[citation['question']].append(citation)
         if not per_question:
-            documents.append({'file': path.name, 'tool': tool, 'question': None, 'citations': 0,
-                              'with_urls': 0, 'pdf_sha256': digest, 'warnings': issues})
+            diagnostic = inspect_unresolved_pdf(path)
+            inferred = diagnostic.get('question_inferred_from_filename')
+            zero_message = ('Zero recoverable citations for '+inferred+
+                            '; confirm whether the Claude PDF contains sources'
+                            if inferred else
+                            'Zero recoverable citations; original question could not be established')
+            # A failed extraction is explicitly *not* a verified zero-citation
+            # answer. Keep it distinguishable from an investigator-coded zero.
+            warnings.append({'file': path.name, 'question': inferred,
+                             'warning': zero_message})
+            if diagnostic['possible_image_only_export']:
+                warnings.append({'file': path.name, 'question': inferred,
+                                 'warning': 'Image-only PDF suspected; OCR or text-selectable re-export required'})
+            documents.append({'file': path.name, 'tool': tool, 'question': inferred,
+                              'citations': 0, 'with_urls': 0, 'pdf_sha256': digest,
+                              'warnings': issues+[zero_message], 'pdf_diagnostics': diagnostic})
         for question, rows in per_question.items():
             documents.append({'file': path.name, 'tool': tool, 'question': question,
                               'citations': len(rows), 'with_urls': sum(x['url'] != 'NR' for x in rows),
@@ -518,6 +532,7 @@ def main(argv=None):
                 wb.update_query_log(tool, question, len(source_rows),
                     [x['file'] for x in docs], incomplete=any(x['with_urls'] == 0 for x in docs))
             else:
+                wb.update_query_log(tool, question, 0, [x['file'] for x in docs], incomplete=True)
                 warnings.append({'tool': tool, 'question': question,
                                  'warning': 'Zero citations extracted; manually confirm the conversation'})
     research = []
@@ -583,6 +598,11 @@ def main(argv=None):
     tool_coverage = defaultdict(set)
     for item in rows:
         tool_coverage[item['tool']].add(item['question'])
+    # Include unresolved documents in coverage. Their question is still
+    # observed/inferred, but cannot be treated as completed extraction.
+    for doc in documents:
+        if doc.get('question'):
+            tool_coverage[doc['tool']].add(doc['question'])
     # Report actual substantive values saved, not mere NR/NOT FOUND placeholders.
     informative_output_cells = sum(
         wb.get_row(rownum).get(col) not in ('', 'NR', 'NOT FOUND', 'Not applicable', None)
@@ -591,6 +611,11 @@ def main(argv=None):
     report = {
         'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
         'input_documents': documents, 'citations_extracted': len(rows),
+        'documents_with_no_citations': sum(doc.get('citations') == 0 for doc in documents),
+        'documents_with_unresolved_question': sum(not doc.get('question') for doc in documents),
+        'documents_suspected_image_only': sum(
+            bool((doc.get('pdf_diagnostics') or {}).get('possible_image_only_export'))
+            for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
         'sources_researched': len(research),  # candidates evaluated; may run fully offline
         'eligible_sources_for_research': researchable_count,

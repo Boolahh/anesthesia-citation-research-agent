@@ -387,11 +387,11 @@ QUESTION_HINTS = {
     'Q05': ('difficult airway', 'awake tracheal intubation'),
     'Q06': ('one lung ventilation', 'one-lung ventilation', 'olv hypoxemia', 'olv hypoxaemia'),
     'Q07': ('cesarean anesthesia', 'caesarean anaesthesia', 'cesarean delivery'),
-    'Q08': ('acute kidney injury', 'aki risk', 'kidney injury prevention'),
+    'Q08': ('acute kidney injury', 'aki risk', 'kidney injury prevention', 'kidney injury risk'),
     'Q09': ('postoperative delirium', 'delirium risk'),
     'Q10': ('tonsillectomy', 'recent upper respiratory infection', 'urti'),
     'Q11': ('cabg', 'coronary artery bypass', 'volatile vs tiva', 'volatile anesthesia comparison'),
-    'Q12': ('intracranial pressure', 'craniotomy', 'elevated icp'),
+    'Q12': ('intracranial pressure', 'craniotomy', 'elevated icp', 'raised icp'),
 }
 
 
@@ -421,6 +421,34 @@ def get_question_for_file(pages, questions, filename):
     if fallback:
         return fallback, [f'Question {fallback} inferred from filename/heading keywords; confirm against actual study prompt']
     return None, ['Cannot identify one of the 12 study questions; name file Q01_*.pdf, etc.']
+
+
+def inspect_unresolved_pdf(path):
+    """Context-only diagnostics for PDFs yielding no citation candidates.
+
+    Never copy clinical text to logs. Filename topic mapping is only a hint:
+    identifying a question is NOT evidence that the AI supplied a citation.
+    """
+    filename = Path(path).stem
+    with fitz.open(str(path)) as document:
+        pages = len(document)
+        text_chars = 0
+        uri_links = 0
+        image_pages = 0
+        for page in document:
+            text_chars += len(page.get_text('text'))
+            uri_links += sum(bool((link.get('uri') or '').lower().startswith(
+                ('https://', 'http://'))) for link in page.get_links())
+            image_pages += bool(page.get_images(full=False))
+        return {
+            'page_count': pages,
+            'selectable_text_characters': text_chars,
+            'uri_link_annotations': uri_links,
+            'pages_containing_images': image_pages,
+            'possible_image_only_export': bool(
+                pages and text_chars < 25 and image_pages > 0),
+            'question_inferred_from_filename': heuristic_question(filename, []),
+        }
 
 
 def parse_pdf(path, tool, questions, api=None):
