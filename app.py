@@ -236,26 +236,24 @@ if submit:
                         env['OPENAI_API_KEY'] = api_key
                     current_progress = st.empty()
                     progress_bar = st.progress(0)
-                    researched = 0
-                    research_total = None
+                    progress_state = {'researched': 0, 'total': None}
 
                     def show_progress(line):
-                        nonlocal researched, research_total
                         if line.startswith('[RESEARCH]'):
                             count = re.search(r'eligible=(\\d+)', line)
                             if count:
-                                research_total = int(count.group(1))
+                                progress_state['total'] = int(count.group(1))
                         elif line.startswith('[SOURCE]'):
-                            researched += 1
+                            progress_state['researched'] += 1
                         elif line.startswith('[PDF]'):
                             current_progress.caption(line[:180])
                         if line.startswith('[SOURCE]') or line.startswith('[RESEARCH]'):
                             current_progress.caption(
-                                f'Publication research: {researched}' +
-                                (f' / {research_total} eligible citations'
-                                 if research_total is not None else ' citations processed'))
-                            if research_total:
-                                progress_bar.progress(min(1.0, researched / research_total))
+                                f"Publication research: {progress_state['researched']}" +
+                                (f" / {progress_state['total']} eligible citations"
+                                 if progress_state['total'] is not None else ' citations processed'))
+                            if progress_state['total']:
+                                progress_bar.progress(min(1.0, progress_state['researched'] / progress_state['total']))
                     proc = run_locally(command, env, on_line=show_progress)
                     progress_bar.empty()
                     current_progress.empty()
