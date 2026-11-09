@@ -7,9 +7,10 @@ accompanied by field-level provenance and unresolved ambiguity flags.
 from __future__ import annotations
 
 from collections import OrderedDict
+from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, unquote, quote
+from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag
 from xml.etree import ElementTree as ET
 import hashlib
 from html import unescape
@@ -199,6 +200,19 @@ def explicit_source_type_from_published_title(title):
     return ''
 
 
+def valid_public_page_title(value):
+    """Reject navigation/access/error titles; never treat generic HTML as a paper."""
+    title = unescape(re.sub(r'\\s+', ' ', str(value or ''))).strip(' -|.:')
+    if not 18 <= len(title) <= 240 or len(re.findall(r'[A-Za-z]{3,}', title)) < 3:
+        return ''
+    if re.search(r'^(?:403|404|500|503)\\b|\\b(?:access denied|not found|page not found|'
+                 r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
+                 r'enable javascript|request blocked|website unavailable|'
+                 r'too many requests|privacy policy|cookie preferences)\\b', title, re.I):
+        return ''
+    return title
+
+
 def normalize_doi(s):
     m = DOI_RE.search(unquote(str(s or '')))
     return m.group().rstrip('.,;)').lower() if m else ''
@@ -384,9 +398,15 @@ class Bibliography:
         self.s = requests.Session()
         self.s.headers.update({'User-Agent': USER_AGENT + (f' mailto:{email}' if email else '')})
         self.events = []
+        # Single-run evidence memo: repeated source occurrences remain separate
+        # workbook records, but should not repeat the same bibliography workflow.
+        self._source_memo = {}
 
     def _get(self, url, params=None, accept='application/json'):
         """Public GET with capped downloads, safe redirects, timeouts, retries, caching."""
+        # Fragment labels distinguish PDF click coordinates, not HTTP resources.
+        # The blue/original URL is kept unchanged elsewhere in the pipeline.
+        url = urldefrag(str(url or '')).url
         if not safe_url(url):
             self.events.append({'url': url, 'status': 'blocked_url'})
             return None
@@ -521,10 +541,23 @@ class Bibliography:
     def metadata(self, citation):
         """Independent lookup pipeline: explicit IDs > PubMed > publisher > constrained title."""
         self.events = []
-        url = citation.get('url') or ''
-        if url == 'NR':
-            url = ''
+        original_url = citation.get('url') or ''
+        url = urldefrag(str(original_url)).url if original_url != 'NR' else ''
         raw = citation.get('citation') or ''
+        # Include the original as-cited text and identifiers in the memo key:
+        # a matching URL does not prove that two differently worded citations
+        # are bibliographically equivalent. Retain evidence-specific warnings.
+        memo_key = (
+            url, raw, str(citation.get('title') or ''),
+            str(citation.get('doi') or ''), str(citation.get('pmid') or ''),
+            bool(citation.get('source_url_verified')),
+        )
+        previous = self._source_memo.get(memo_key)
+        if previous is not None:
+            result = deepcopy(previous)
+            result['lookup_events'] = [{'url': url, 'status': 'source_memo_hit'}]
+            result['lookup_performed'] = False
+            return result
         # A human-supplied, independently verified X URL overrides original
         # as-cited DOI/PMID text, which can itself contain the study's errors.
         verified_url = bool(citation.get('source_url_verified'))
@@ -706,10 +739,12 @@ class Bibliography:
             match['status'] = 'identifier_conflict'
         elif match['method'] in ('high_similarity_title_candidate','exact_title_pubmed_candidate'):
             match['status'] = 'title_candidate_unverified'
-        return {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
-                'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
-                'source_url': url if safe_url(url) else '', 'match': match,
-                'lookup_events': list(self.events), 'lookup_performed': not self.offline}
+        result = {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
+                  'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
+                  'source_url': url if safe_url(url) else '', 'match': match,
+                  'lookup_events': list(self.events), 'lookup_performed': not self.offline}
+        self._source_memo[memo_key] = deepcopy(result)
+        return result
 
     def _affiliation_country(self, text):
         """Classify only a terminal, explicit country in one author's address.
@@ -780,9 +815,25 @@ class Bibliography:
         pm_url = 'https://pubmed.ncbi.nlm.nih.gov/'+pm['pmid']+'/' if pm.get('pmid') else ''
         oa_url = oa.get('id') or ''
         cr_url = 'https://doi.org/'+evidence['doi'] if evidence.get('doi') else ''
-        first = pm.get('title') or oa.get('display_name') or ((cr.get('title') or [''])[0]) or ep.get('title') or \
-                ((page.get('meta') or {}).get('citation_title') or [''])[0]
-        put('Z', first or 'NOT FOUND', 'PubMed' if pm.get('title') else 'OpenAlex' if oa.get('display_name') else 'Crossref' if cr else 'Europe PMC / publisher', pm_url or oa_url or cr_url)
+        page_meta = page.get('meta') or {}
+        official_title = (pm.get('title') or oa.get('display_name') or
+                          ((cr.get('title') or [''])[0]) or ep.get('title') or
+                          (page_meta.get('citation_title') or [''])[0])
+        # Non-journal websites often supply a useful article title only in
+        # OpenGraph / DC / HTML <title>, not citation_* metadata. The title is
+        # merely a *provisional webpage label*, never proof of publication identity.
+        page_title = valid_public_page_title(
+            (page_meta.get('og:title') or page_meta.get('dc.title') or
+             [page.get('title') or ''])[0])
+        first = official_title or page_title
+        title_url = pm_url or oa_url or cr_url or evidence.get('source_url', '')
+        put('Z', first or 'NOT FOUND',
+            'PubMed / Crossref / Europe PMC / publisher' if official_title else
+            'Original linked webpage title (unverified)' if page_title else 'no matching title',
+            title_url)
+        if page_title and not official_title:
+            review_flags.append('Title obtained from linked webpage; confirm identity and source type manually')
+
         if pm.get('year'):
             put('AA', pm['year'], 'PubMed', pm_url, pm.get('year_basis', ''))
         elif oa.get('publication_year'):
