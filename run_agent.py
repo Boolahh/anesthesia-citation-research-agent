@@ -900,7 +900,7 @@ def main(argv=None):
             'Original linked webpage title (unverified)' for p in research),
         'provisional_pdf_title_occurrences': sum(
             (p.get('field_provenance') or {}).get('Z', {}).get('source') ==
-            'Original linked PDF metadata title (unverified)' for p in research),
+            'Original linked PDF title proposal (unverified)' for p in research),
         'public_source_pdf_read_occurrences': sum(
             (p.get('source_document') or {}).get('status') == 'read'
             for p in research),
