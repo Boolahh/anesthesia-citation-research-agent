@@ -20,6 +20,8 @@ class AlternatePubMedSourceLinkTests(TestCase):
              '38839472', 'BVS MEDLINE index locator'),
             ('https://https-pubmed-ncbi-nlm-nih-gov-443.webvpn.ynu.edu.cn/38870081/#1',
              '38870081', 'institutional PubMed proxy link'),
+            ('https://busqueda.tmgl.org/portal/resource/pt/mdl-39570649',
+             '39570649', 'TMG MEDLINE index locator (unverified mirror)'),
         ]
         for url, expected_id, basis in sources:
             with self.subTest(url=url):

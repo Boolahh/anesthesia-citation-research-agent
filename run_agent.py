@@ -30,9 +30,11 @@ from agent.pdf_extract import (parse_pdf, inspect_unresolved_pdf,
                                citation_identity, weak_visible_citation_label)
 from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
+from agent.source_coverage import (geography_candidate_sources, source_access_review,
+                                   GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.2.1'
+APP_VERSION = '2.3.0'
 
 
 def write_json(path, payload):
@@ -267,6 +269,7 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
         'field_provenance': evidence.get('field_provenance', {}),
         'lookup_events': evidence.get('lookup_events', []),
         'identifiers': {'doi': evidence.get('doi'), 'pmid': evidence.get('pmid')},
+        'source_document': evidence.get('public_pdf') or {},
     }
 
 
@@ -539,7 +542,8 @@ def _geography_review(rows, proposals, workbook):
 RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
-    'informative_green_fields','metadata_sources','review_reasons',
+    'informative_green_fields','metadata_sources','source_document_status',
+    'source_document_title_hint','review_reasons',
 ]
 
 
@@ -591,6 +595,8 @@ def _research_audit(rows, proposals):
             'research_pmid':(proposed or {}).get('identifiers',{}).get('pmid',''),
             'informative_green_fields':meaningful,
             'metadata_sources':'; '.join(sources),
+            'source_document_status':((proposed or {}).get('source_document') or {}).get('status',''),
+            'source_document_title_hint':((proposed or {}).get('source_document') or {}).get('title_hint',''),
             'review_reasons':'; '.join(str(x) for x in reasons[:12]),
         })
     return result
@@ -771,6 +777,10 @@ def main(argv=None):
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     source_level = _source_research_summary(rows, research)
     write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
+    first_author_sources = geography_candidate_sources(rows, research)
+    write_csv(report_dir/'first_author_source_coverage.csv', first_author_sources, GEO_SOURCE_FIELDS)
+    access_review = source_access_review(rows, research)
+    write_csv(report_dir/'source_access_review.csv', access_review, ACCESS_REVIEW_FIELDS)
     alias_review = _source_alias_review(rows, research)
     write_csv(report_dir/'source_alias_review.csv', alias_review, SOURCE_ALIAS_FIELDS)
     geography = _geography_review(rows, research, wb)
@@ -806,6 +816,20 @@ def main(argv=None):
         'distinct_sources_within_questions': len(source_level),
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
+        'candidate_publications_with_first_author_country': len(first_author_sources),
+        'candidate_publications_with_pubmed_country_evidence': sum(
+            p['country_evidence_class'] == 'PubMed author-specific affiliation'
+            for p in first_author_sources),
+        'candidate_publications_with_openalex_country_inference': sum(
+            p['country_evidence_class'] == 'OpenAlex inferred (human review)'
+            for p in first_author_sources),
+        'candidate_publications_with_country_conflicts': sum(
+            p['country_evidence_class'] == 'conflicting'
+            for p in first_author_sources),
+        'unresolved_source_identities_for_review': len(access_review),
+        'unresolved_downloadable_source_identities': sum(
+            p['source_access_category'] == 'downloadable_document_or_pdf'
+            for p in access_review),
         'distinct_sources_high_priority': sum(p['review_priority']=='High' for p in source_level),
         'possible_source_alias_groups': len(alias_review),
         'possible_source_alias_occurrences': sum(

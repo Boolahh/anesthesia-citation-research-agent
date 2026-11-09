@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 
 import fitz
 
-from agent.pdf_publication import inspect_public_pdf, plausible_document_title
+from agent.pdf_publication import (inspect_public_pdf, plausible_document_title,
+                                   visible_first_page_title_hint, MAX_PDF_BYTES)
 from agent.research import Bibliography
 
 
@@ -59,6 +60,30 @@ class PublicSourcePDFTests(TestCase):
             'https://example.org/file.pdf', session, lambda _: True)
         self.assertEqual(result['status'], 'read')
         self.assertEqual(result['title'], '')
+
+    def test_first_page_heading_is_a_review_hint_not_an_authenticated_title(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((40, 90),
+                             'Massiv blodning - Anestesirutin',
+                             fontsize=21)
+            page.insert_text((40, 145),
+                             'A hospital document about massive haemorrhage',
+                             fontsize=10)
+            body = doc.tobytes()
+        session=Mock()
+        session.get.return_value=Response(body)
+        result=inspect_public_pdf('https://example.org/local.pdf',
+                                  session, lambda _: True)
+        self.assertEqual(result['status'],'read')
+        self.assertEqual(result['title'],'')
+        self.assertEqual(result['title_hint'],'Massiv blodning - Anestesirutin')
+        self.assertIn('reviewer only',result['title_basis'])
+
+    def test_optional_blue_book_size_cap_supports_2025_anesthesiology_compilation(self):
+        # The officially linked 2025 ANZCA Blue Book is ~16.8MB.
+        # This asserts only the opt-in transfer budget, not publication validity.
+        self.assertGreater(MAX_PDF_BYTES, 16_820_000)
 
     def test_publication_pdf_download_is_size_capped(self):
         document = make_document(
