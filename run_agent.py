@@ -251,7 +251,9 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     proposed = refine_green(proposed, workbook)
     if journal_evidence:
         proposed = supplement_journal_fields(proposed, evidence, journal_evidence, workbook.data.countries)
-    has_metadata = any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+    has_metadata = (any(evidence.get(k) for k in
+                        ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+                    or bool((evidence.get('public_pdf') or {}).get('title')))
     informative_fields = sum(value not in ('', 'NR', 'NOT FOUND', 'Not applicable', None)
                              for value in proposed.values())
     critical = any('conflicts with' in msg or 'differs materially' in msg for msg in warnings)
@@ -601,6 +603,8 @@ def main(argv=None):
     ap.add_argument('--max-docs', type=int, default=0)
     ap.add_argument('--contact-email', default=os.getenv('RESEARCH_CONTACT_EMAIL', ''))
     ap.add_argument('--journal-evidence', help='Optional investigator-verified SCImago and licensed 2026 JCR CSV')
+    ap.add_argument('--inspect-linked-pdfs', action='store_true',
+                    help='Opt-in bounded public source-PDF metadata lookup (slower; review required)')
     args = ap.parse_args(argv)
     if args.max_sources < 0 or args.max_docs < 0:
         ap.error('max-sources/max-docs must be nonnegative')
@@ -650,7 +654,8 @@ def main(argv=None):
     researchable_count = 0
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
-                                   offline=args.offline)
+                                   offline=args.offline,
+                                   inspect_linked_pdfs=args.inspect_linked_pdfs)
         journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
         # Compute eligibility *after* considering column X, so reports can
         # distinguish skipped citations from those left out by the research cap.
@@ -783,6 +788,7 @@ def main(argv=None):
         'green_cells_policy': args.green_policy, 'stages': args.stage,
         'investigator_journal_evidence_used': bool(args.journal_evidence),
         'ai_used': bool(ai), 'offline': args.offline,
+        'inspect_linked_pdfs': bool(args.inspect_linked_pdfs),
         'tools_detected': {k: sorted(v) for k,v in tool_coverage.items()},
         'warning_count': len(warnings)+len(wb.warnings),
         'warnings': warnings+[{'warning': x} for x in wb.warnings],
