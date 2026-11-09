@@ -31,7 +31,7 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.1.0'
+APP_VERSION = '2.2.0'
 
 
 def write_json(path, payload):
@@ -655,6 +655,10 @@ def main(argv=None):
         # Compute eligibility *after* considering column X, so reports can
         # distinguish skipped citations from those left out by the research cap.
         researchable_count = sum(research_candidate(item, wb)[2] for item in rows)
+        active_count = (min(args.max_sources, researchable_count)
+                        if args.max_sources else researchable_count)
+        print(f'[RESEARCH] eligible={active_count} total={researchable_count} '
+              f'model={args.tool or "mixed"} policy={args.green_policy}', flush=True)
         attempts = 0
         for item in rows:
             if args.max_sources and attempts >= args.max_sources:
@@ -685,14 +689,16 @@ def main(argv=None):
                                      'warning': ('Publication identity mismatch; green fields withheld pending review'
                                                  if identity_problem else
                                                  'Metadata retrieved without informative fields; no green data written')})
-                print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
-                      f'{"written" if written else "proposal only"} metadata={info["has_metadata"]}')
             except Exception as exc:
                 record['error'] = f'{type(exc).__name__}: {str(exc)[:250]}'
                 record['written_to_workbook'] = False
                 warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
                                  'warning': 'Research exception: '+record['error']})
             research.append(record)
+            print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
+                  f'{"written" if record.get("written_to_workbook") else "proposal only"} '
+                  f'metadata={bool(record.get("has_metadata"))} '
+                  f'{"ERROR" if record.get("error") else "OK"}', flush=True)
             # Crash-recovery checkpoint: proposals are *not* accepted/verified by this.
             write_json(report_dir/'research_proposals.json', research)
     if not research:
@@ -754,6 +760,10 @@ def main(argv=None):
             for item in research),  # fresh network responses; backward compatible
         'cached_lookup_reuses': sum(
             sum(event.get('status') == 'cache_hit' for event in item.get('lookup_events', []))
+            for item in research),
+        'source_memo_reuses': sum(
+            sum(event.get('status') == 'source_memo_hit'
+                for event in item.get('lookup_events', []))
             for item in research),
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
