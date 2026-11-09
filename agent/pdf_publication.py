@@ -20,7 +20,7 @@ MAX_PDF_SECONDS = 45
 
 def plausible_document_title(value):
     text = re.sub(r'\s+', ' ', str(value or '')).strip(' -|\t\r\n')
-    if not 24 <= len(text) <= 220 or len(re.findall(r'[A-Za-z]{3,}', text)) < 4:
+    if not 24 <= len(text) <= 220 or len(re.findall(r'[^\\W\\d_]{3,}', text, re.UNICODE)) < 2:
         return ''
     if re.search(r'\b(?:microsoft word|untitled|document\d*|scanner|scan copy|'
                  r'adobe acrobat|page [0-9]+|access denied|draft cover)\b', text, re.I):
