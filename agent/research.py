@@ -10,7 +10,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag
+from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag, parse_qs
 from xml.etree import ElementTree as ET
 import hashlib
 from html import unescape
@@ -201,6 +201,35 @@ def explicit_source_type_from_published_title(title):
     return ''
 
 
+def non_source_search_landing(url):
+    """Describe links to *search interfaces*, not individual publications.
+
+    Preserve these as-cited hyperlinks in blue. A search URL can be a
+    citation/link error; only the investigator can adjudicate that status.
+    Avoid searching the URL as if it identified an actual work.
+    """
+    parsed = urlparse(str(url or ''))
+    host = (parsed.hostname or '').lower()
+    path = parsed.path.lower().rstrip('/')
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov'):
+        if (path in ('', '/', '/pubmed') and
+                any(key in query for key in ('term', 'search', 'query'))):
+            return 'PubMed query results URL is not a specific cited publication'
+    if host in ('www.google.com', 'google.com', 'scholar.google.com'):
+        if path in ('/search', '/scholar', '/scholar_lookup'):
+            return 'Search engine results URL is not a specific cited publication'
+    if host in ('www.bing.com', 'bing.com') and path == '/search':
+        return 'Search engine results URL is not a specific cited publication'
+    if host in ('api.openalex.org', 'openalex.org') and path in ('/works', '/works/search'):
+        if any(key in query for key in ('search', 'filter', 'q')):
+            return 'OpenAlex works search URL is not a specific cited publication'
+    if re.search(r'/(?:search|searchresults|search-results)(?:/|$)', path):
+        if any(key in query for key in ('q', 'query', 'term', 'search', 'keyword')):
+            return 'Search listings page is not a specific cited publication'
+    return ''
+
+
 def valid_public_page_title(value):
     """Reject navigation/access/error titles; never treat generic HTML as a paper."""
     title = unescape(re.sub(r'\s+', ' ', str(value or ''))).strip(' -|.:')
@@ -209,7 +238,9 @@ def valid_public_page_title(value):
     if re.search(r'^(?:403|404|500|503)\b|\b(?:access denied|not found|page not found|'
                  r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
                  r'enable javascript|request blocked|website unavailable|'
-                 r'too many requests|privacy policy|cookie preferences)\b', title, re.I):
+                 r'too many requests|privacy policy|cookie preferences|'
+                 r'(?:^search results?(?:\s*[-|:]|\s+for\b))|'
+                 r'(?:[-|]\s*search results?\s*[-|]?\s*(?:pubmed|google|bing)))\b', title, re.I):
         return ''
     return title
 
@@ -571,6 +602,24 @@ class Bibliography:
             result = deepcopy(previous)
             result['lookup_events'] = [{'url': url, 'status': 'source_memo_hit'}]
             result['lookup_performed'] = False
+            return result
+        non_source_reason = non_source_search_landing(url)
+        if non_source_reason:
+            # Do not turn search-result lists (not even PubMed's own) into
+            # government documents or published papers.
+            result = {
+                'doi': '', 'pmid': '', 'crossref': None, 'openalex': None,
+                'europepmc': None, 'pubmed': None, 'public_page': None,
+                'public_pdf': None, 'source_url': url,
+                'match': {
+                    'method': 'none', 'status': 'non_source_search_results',
+                    'title_similarity': None, 'warnings': [non_source_reason],
+                },
+                'lookup_events': [{
+                    'url': url, 'status': 'not_single_source_search_results'}],
+                'lookup_performed': False,
+            }
+            self._source_memo[memo_key] = deepcopy(result)
             return result
         # A human-supplied, independently verified X URL overrides original
         # as-cited DOI/PMID text, which can itself contain the study's errors.
