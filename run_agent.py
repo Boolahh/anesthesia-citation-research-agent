@@ -31,7 +31,7 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.2.0'
+APP_VERSION = '2.2.1'
 
 
 def write_json(path, payload):
@@ -445,9 +445,11 @@ def _geography_review(rows, proposals, workbook):
         has_country = country not in ('', 'NR', 'NOT FOUND', None)
         if not has_country and author in ('NR', 'NOT FOUND', '') and source_type in (
                 'Professional society or organization webpage',
-                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)'):
+                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                'Government or public-health agency document'):
             priority = 'Applicability review'
-            action = 'Determine whether a named first author and author geography apply to this source'
+            action = ('Confirm whether an individual first author and country are '
+                      'applicable to this source before including it in geographic outcomes')
         elif not has_country:
             priority = 'High - primary outcome missing'
             action = 'Locate the actual first-author affiliation, confirm country and WHO region'
@@ -509,6 +511,8 @@ def _research_audit(rows, proposals):
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
+            elif (proposed.get('match') or {}).get('status') == 'non_source_search_results':
+                status = 'search_results_link_not_single_publication'
             elif not proposed.get('has_metadata'):
                 status = 'metadata_unavailable'
             elif not proposed.get('can_autowrite', False):
@@ -784,6 +788,15 @@ def main(argv=None):
             for rownum in wb.existing.values()),
         'review_queue_items': len(queue),
         'sources_with_identity_conflicts': sum(x['research_status'] == 'identity_conflict_or_ambiguous_source' for x in audit),
+        'search_results_links_requiring_review': sum(
+            x['research_status'] == 'search_results_link_not_single_publication' for x in audit),
+        'provisional_webpage_title_occurrences': sum(
+            (p.get('field_provenance') or {}).get('Z', {}).get('source') ==
+            'Original linked webpage title (unverified)' for p in research),
+        'journal_article_first_author_countries': sum(
+            wb.get_row(rownum).get('AD') == 'Journal article' and
+            wb.get_row(rownum).get('AN') not in ('', 'NR', 'NOT FOUND', None)
+            for rownum in wb.existing.values()),
         'informative_green_cells_proposed': sum(x['informative_green_fields'] for x in audit),
         'green_cells_policy': args.green_policy, 'stages': args.stage,
         'investigator_journal_evidence_used': bool(args.journal_evidence),
