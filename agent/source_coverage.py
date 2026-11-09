@@ -54,8 +54,8 @@ def geography_candidate_sources(rows, proposals):
         ids = proposal.get('identifiers') or {}
         doi = str(ids.get('doi') or f.get('AB') or '').strip().lower()
         pmid = str(ids.get('pmid') or f.get('AC') or '').strip()
-        if doi in EMPTY: doi = ''
-        if pmid in EMPTY: pmid = ''
+        if doi.upper() in ('NR', 'NOT FOUND'): doi = ''
+        if pmid.upper() in ('NR', 'NOT FOUND'): pmid = ''
         if doi:
             resolved = 'doi:' + doi
             basis = 'provisional DOI'
@@ -105,8 +105,8 @@ def source_access_review(rows, proposals):
     mapped = {_citation_key(p): p for p in proposals}
     grouped = defaultdict(list)
     for item in rows:
-        p = mapped.get(_citation_key(item)) or {}
-        if p.get('written_to_workbook'):
+        p = mapped.get(_citation_key(item))
+        if not p or p.get('written_to_workbook'):
             continue
         grouped[(item['tool'], item['question'], citation_identity(item))].append((item, p))
 
