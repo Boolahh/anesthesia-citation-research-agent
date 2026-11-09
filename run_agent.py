@@ -367,6 +367,52 @@ def _source_research_summary(rows, research):
     return result
 
 
+SOURCE_ALIAS_FIELDS = [
+    'tool', 'question', 'proposed_title', 'distinct_linked_source_identities',
+    'citation_occurrences', 'citation_orders', 'source_identities',
+    'original_urls', 'review_action',
+]
+
+
+def _source_alias_review(rows, proposals):
+    """Flag different linked identities with the same proposed source title.
+
+    Do NOT merge citations or decide that translations/mirrors are equivalent.
+    A title match is only a candidate grouping for manual source verification.
+    """
+    by_key = {(p['tool'], p['question'], int(p['order'])): p for p in proposals}
+    grouped = defaultdict(list)
+    for item in rows:
+        key = (item['tool'], item['question'], int(item['order']))
+        proposal = by_key.get(key) or {}
+        title = str((proposal.get('fields') or {}).get('Z') or '').strip()
+        if title in ('', 'NR', 'NOT FOUND') or len(title) < 25:
+            continue
+        title_key = re.sub(r'\s+', ' ', title).casefold().strip(' .')
+        grouped[(item['tool'], item['question'], title_key)].append((item, title))
+    result = []
+    for (tool, question, _), candidates in grouped.items():
+        identities = sorted({citation_identity(item) for item, _ in candidates})
+        if len(identities) < 2:
+            continue
+        urls = sorted({str(item.get('url') or '') for item, _ in candidates
+                       if item.get('url') not in ('', 'NR', None)})
+        result.append({
+            'tool': tool, 'question': question,
+            'proposed_title': candidates[0][1],
+            'distinct_linked_source_identities': len(identities),
+            'citation_occurrences': len(candidates),
+            'citation_orders': ', '.join(str(item['order']) for item, _ in candidates),
+            'source_identities': ' | '.join(identities),
+            'original_urls': ' | '.join(urls),
+            'review_action': ('Same proposed title across distinct citation links; '
+                              'review translations, mirrors, versions, and identifiers. '
+                              'Keep all as-cited occurrences unchanged.'),
+        })
+    return sorted(result, key=lambda x: (
+        -x['citation_occurrences'], x['tool'], x['question']))
+
+
 SOURCE_QUALITY_FIELDS = [
     'tool','question','citation_order','source_file','pdf_page',
     'original_citation','original_url','source_identity','source_context',
@@ -725,6 +771,8 @@ def main(argv=None):
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     source_level = _source_research_summary(rows, research)
     write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
+    alias_review = _source_alias_review(rows, research)
+    write_csv(report_dir/'source_alias_review.csv', alias_review, SOURCE_ALIAS_FIELDS)
     geography = _geography_review(rows, research, wb)
     write_csv(report_dir/'geography_review.csv', geography, GEOGRAPHY_REVIEW_FIELDS)
     queue = _review_rows(rows, research, warnings)
@@ -759,6 +807,9 @@ def main(argv=None):
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
         'distinct_sources_high_priority': sum(p['review_priority']=='High' for p in source_level),
+        'possible_source_alias_groups': len(alias_review),
+        'possible_source_alias_occurrences': sum(
+            p['citation_occurrences'] for p in alias_review),
         'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
         'explicit_bibliography_occurrences': sum(
             item.get('source_context') == 'bibliography' for item in rows),
