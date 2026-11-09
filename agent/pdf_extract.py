@@ -7,6 +7,7 @@ For unknown/incomplete layouts, preserve candidates plus explicit review warning
 from __future__ import annotations
 
 from collections import defaultdict
+from agent.deepseek_numbered import extract_deepseek_numbered
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
@@ -412,8 +413,23 @@ def _matches_reference(a, b):
 
 def _parse_pages(pages, tool, question, path, api=None):
     warnings = []
-    annotations = extract_links(pages)
-    references = _plain_references(pages)
+    # DeepSeek exports use linked superscript numbers, often with three nested
+    # clickable PDF rectangles per visible citation. Prefer the observed numbers
+    # over generic surrounding prose, and never confuse "Found N web pages"
+    # with N sources actually cited in the answer.
+    deepseek_format = (tool == 'DSK' and any(
+        re.search(r'Found\\s+\\d+\\s+web\\s+pages', p.get_text(), re.I)
+        for p in pages))
+    if deepseek_format:
+        annotations, deepseek_warnings = extract_deepseek_numbered(pages)
+        warnings.extend(deepseek_warnings)
+        # Fallback is for exports not matching this numbered-link layout.
+        if not annotations:
+            annotations = extract_links(pages)
+        references = []
+    else:
+        annotations = extract_links(pages)
+        references = _plain_references(pages)
     # Include uncaptured references, but never add the same entry once more
     # simply because its URL appears as visible text and as PDF annotation.
     found = list(annotations)
@@ -478,6 +494,9 @@ def _parse_pages(pages, tool, question, path, api=None):
         raw = flatten_text(entry.get('citation', ''))
         url = entry.get('url') or 'NR'
         info = rough_fields(raw, url)
+        if entry.get('kind') == 'deepseek_numbered_link':
+            # A number is an as-cited marker, never an article title.
+            info['title'] = 'NR'
         identity = citation_identity({**info, 'url': url})
         repeated = 'Y' if identity in seen else 'N'
         seen.add(identity)
