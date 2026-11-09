@@ -185,6 +185,11 @@ with st.form('agent_form'):
             format_func=lambda v: 'Only human-verified real sources (recommended)' if v == 'verified-only' else 'Provisional source proposals (requires review)')
         offline = st.checkbox('Offline: no web / API requests', value=False)
         no_ai = st.checkbox('Do not use paid AI API', value=True)
+        inspect_pdfs = st.checkbox(
+            'Inspect linked source PDFs (optional; potentially slower)',
+            value=False,
+            help='Download up to 10 MB from a linked public PDF only when bibliographic records are missing. '
+                 'A plausible first-page title is still a reviewer-only proposal.')
         max_sources = st.number_input('Maximum publication research lookups (0 = all)',
                                       min_value=0, max_value=3500, value=10,
                                       help='10 (default) attempts only the first 10 eligible citations. '
@@ -231,6 +236,8 @@ if submit:
                         command.append('--offline')
                     if no_ai:
                         command.append('--no-ai')
+                    if inspect_pdfs:
+                        command.append('--inspect-linked-pdfs')
                     env = os.environ.copy()
                     if api_key:
                         env['OPENAI_API_KEY'] = api_key
