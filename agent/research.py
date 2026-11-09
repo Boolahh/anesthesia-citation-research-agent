@@ -1022,6 +1022,14 @@ class Bibliography:
             review_flags.append(
                 'PDF contains an edited book; do not assign editor country as article first-author country '
                 'or assume every chapter is independently cited')
+        elif public_pdf.get('document_kind') == 'regional_clinical_protocol':
+            put('AD', 'Government or public-health agency document',
+                'official regional clinical protocol PDF (unverified)',
+                evidence.get('source_url', ''),
+                'source title, hostname and first-page evidence identify a healthcare protocol')
+            review_flags.append(
+                'Regional clinical protocol classification is provisional; '
+                'confirm issuing institution and whether any individual first author applies')
         elif 'ncbi.nlm.nih.gov/books/' in evidence.get('source_url', ''):
             put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)', 'source URL', evidence.get('source_url', ''))
         elif page and first:
