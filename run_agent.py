@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 
 try:
     from dotenv import load_dotenv
@@ -610,6 +611,7 @@ def main(argv=None):
     ap.add_argument('--inspect-linked-pdfs', action='store_true',
                     help='Opt-in bounded public source-PDF metadata lookup (slower; review required)')
     args = ap.parse_args(argv)
+    run_started = time.monotonic()
     if args.max_sources < 0 or args.max_docs < 0:
         ap.error('max-sources/max-docs must be nonnegative')
     report_dir = Path(args.report_dir)
@@ -621,6 +623,7 @@ def main(argv=None):
     else:
         # Research-only resumes from an edited/reviewed workbook, with no PDFs.
         rows, documents, warnings = _original_rows(wb), [], []
+    extraction_seconds = round(time.monotonic() - run_started, 2)
     write_json(report_dir/'citations_extracted.json', rows)
     write_csv(report_dir/'citation_preview.csv', rows,
         ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
@@ -629,7 +632,9 @@ def main(argv=None):
     source_review = _source_quality_review(rows)
     write_csv(report_dir/'source_quality_review.csv', source_review, SOURCE_QUALITY_FIELDS)
     if args.command == 'scan':
-        write_json(report_dir/'scan_report.json', {'documents': documents, 'citations': len(rows), 'warnings': warnings})
+        write_json(report_dir/'scan_report.json', {
+            'documents': documents, 'citations': len(rows), 'warnings': warnings,
+            'elapsed_seconds': round(time.monotonic() - run_started, 2)})
         queue = _review_rows(rows, [], warnings)
         write_csv(report_dir/'review_queue.csv', queue,
             ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
@@ -656,6 +661,7 @@ def main(argv=None):
                                  'warning': 'Zero citations extracted; manually confirm the conversation'})
     research = []
     researchable_count = 0
+    research_started = time.monotonic()
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline,
@@ -710,6 +716,7 @@ def main(argv=None):
                   f'{"ERROR" if record.get("error") else "OK"}', flush=True)
             # Crash-recovery checkpoint: proposals are *not* accepted/verified by this.
             write_json(report_dir/'research_proposals.json', research)
+    research_seconds = round(time.monotonic() - research_started, 2) if args.stage in ('research', 'all') else 0.0
     if not research:
         # Avoid leaving a previous run's unrelated proposals in reused folders.
         write_json(report_dir/'research_proposals.json', [])
@@ -738,6 +745,9 @@ def main(argv=None):
     )
     report = {
         'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
+        'elapsed_seconds': round(time.monotonic() - run_started, 2),
+        'extraction_seconds': extraction_seconds,
+        'research_seconds': research_seconds,
         'input_documents': documents, 'citations_extracted': len(rows),
         'documents_with_no_citations': sum(doc.get('citations') == 0 for doc in documents),
         'documents_with_unresolved_question': sum(not doc.get('question') for doc in documents),
