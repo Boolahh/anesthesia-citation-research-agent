@@ -201,6 +201,36 @@ def explicit_source_type_from_published_title(title):
     return ''
 
 
+def pubmed_id_from_source_link(url):
+    """Return a PubMed identifier and its original-URL locator basis.
+
+    Only recognized record URL *shapes* are accepted. A proxy/index link is
+    never treated as evidence that the article matches the AI citation;
+    it yields an independently retrieved PubMed candidate for human review.
+    """
+    parsed = urlparse(str(url or ''))
+    host = (parsed.hostname or '').lower()
+    path = unquote(parsed.path).rstrip('/')
+    if host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov'):
+        pattern = r'/(?:pubmed/)?(\d{6,9})$'
+        match = re.fullmatch(pattern, path)
+        if match:
+            return match.group(1), 'official PubMed record link'
+    if host in ('europepmc.org', 'www.europepmc.org', 'dev.europepmc.org'):
+        match = re.fullmatch(r'/article/MED/(\d{6,9})', path, re.I)
+        if match:
+            return match.group(1), 'Europe PMC MED record locator'
+    if host == 'pesquisa.bvsalud.org':
+        match = re.search(r'/resource/[^/]+/mdl-(\d{6,9})$', path, re.I)
+        if match:
+            return match.group(1), 'BVS MEDLINE index locator'
+    if host == 'https-pubmed-ncbi-nlm-nih-gov-443.webvpn.ynu.edu.cn':
+        match = re.fullmatch(r'/(\d{6,9})', path)
+        if match:
+            return match.group(1), 'institutional PubMed proxy link'
+    return '', ''
+
+
 def non_source_search_landing(url):
     """Describe links to *search interfaces*, not individual publications.
 
@@ -629,9 +659,12 @@ class Bibliography:
         issue_flags = []
         original_doi = normalize_doi(citation.get('doi')) or normalize_doi(raw)
         url_doi = normalize_doi(url)
-        url_pmid_match = re.search(
-            r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)', url, re.I)
-        url_pmid = url_pmid_match.group(1) if url_pmid_match else ''
+        url_pmid, locator_basis = pubmed_id_from_source_link(url)
+        locator_warnings = []
+        if url_pmid and locator_basis != 'official PubMed record link':
+            locator_warnings.append(
+                f'Candidate PMID {url_pmid} derived from {locator_basis}; '
+                'compare original linked record before accepting publication identity')
         original_pmid = str(citation.get('pmid') or '')
         original_pmid = original_pmid if original_pmid.isdigit() else ''
         if url_doi and original_doi and url_doi != original_doi:
@@ -693,8 +726,9 @@ class Bibliography:
         # resolved the record, fetching that HTML adds latency but no evidence.
         host = (urlparse(url).hostname or '').lower()
         skip_redundant_pubmed_page = (
-            host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
-            and bool(pubmed or europe or cross or oa))
+            bool(pubmed or europe or cross or oa) and
+            (host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
+             or bool(url_pmid and locator_basis != 'official PubMed record link')))
         is_pdf_url = urlparse(url).path.lower().endswith('.pdf')
         page = (self.public_page(url)
                 if url and not skip_redundant_pubmed_page and not is_pdf_url else None)
@@ -722,7 +756,8 @@ class Bibliography:
                 oa_candidate = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
                 oa = oa_candidate if oa_candidate and oa_candidate.get('id') else None
         match = {'method': 'reviewer_verified_URL' if verified_url else 'identifier' if doi or pmid else 'none',
-                 'status': 'review_required', 'title_similarity': None, 'warnings': list(issue_flags)}
+                 'status': 'review_required', 'title_similarity': None,
+                 'warnings': list(issue_flags) + locator_warnings}
         if verified_url and citation.get('doi') not in ('', 'NR', None) and doi and normalize_doi(citation.get('doi')) != doi:
             match['warnings'].append('Original cited DOI differs from reviewer verified URL; preserve citation error for protocol')
         # Do not turn free-form names such as "NEJM, 2019" into title searches.
