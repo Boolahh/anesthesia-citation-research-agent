@@ -17,7 +17,7 @@
 | COP | Microsoft Copilot | OEV | OpenEvidence |
 | UTD | UpToDate Expert AI | VER | Vera Health |
 
-The 12 standardized questions and 16 platform definitions are read *directly* from the original study workbook, not duplicated in code. The extraction engine supports original PDF hyperlinks, printed URLs/DOIs/PMIDs, numbered and bulleted references, multi-page responses, and optional evidence-constrained AI transcription. Unknown layouts or hidden sources are flagged for a human rather than silently guessed. **Only the ChatGPT sample export format supplied to this project has been tested end-to-end; each other platform needs a pilot QA check before research-scale use.**
+The 12 standardized questions and 16 platform definitions are read *directly* from the original study workbook, not duplicated in code. The extraction engine supports original PDF hyperlinks, printed URLs/DOIs/PMIDs, numbered and bulleted references, multi-page responses, and optional evidence-constrained AI transcription. Unknown layouts or hidden sources are flagged for a human rather than silently guessed. **Pilot status:** ChatGPT has a historical extraction pilot; the 12-question Claude pilot has undergone multiple extraction QA cycles; and a new 12-question DeepSeek PDF geometry audit found 156 linked citation occurrences representing 73 within-question linked source identities. These are extraction baselines, not independently verified citation censuses. Every new platform and source-metadata enrichment run still requires real-PDF and human-review validation. See `docs/DEEPSEEK_VALIDATION.md`.
 
 ## Windows quick start (VS Code or Git Bash)
 
