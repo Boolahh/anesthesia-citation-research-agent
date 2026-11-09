@@ -418,7 +418,7 @@ def _parse_pages(pages, tool, question, path, api=None):
     # over generic surrounding prose, and never confuse "Found N web pages"
     # with N sources actually cited in the answer.
     deepseek_format = (tool == 'DSK' and any(
-        re.search(r'Found\\s+\\d+\\s+web\\s+pages', p.get_text(), re.I)
+        re.search(r'Found\s+\d+\s+web\s+pages', p.get_text(), re.I)
         for p in pages))
     if deepseek_format:
         annotations, deepseek_warnings = extract_deepseek_numbered(pages)
