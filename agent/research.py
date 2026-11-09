@@ -848,7 +848,8 @@ class Bibliography:
             r'(?:[\s,;.]*'
             r'(?:e-?mail\s*:\s*)?'
             r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})+'
-            r'[\s,;.]*
+            r'[\s,;.]*$', '', value, flags=re.I).strip(' .;')
+        if not value:
             return 'NR', 'NR', 'NR'
         # Institutional addresses conventionally finish with a country. Use
         # the final comma/semicolon component; a trailing postal code can
