@@ -623,7 +623,14 @@ class Bibliography:
             result = self.fetch_json('https://api.openalex.org/works',
                 {'filter': 'pmid:https://pubmed.ncbi.nlm.nih.gov/'+pmid, 'per-page': 1})
             oa = next(iter((result or {}).get('results') or []), None)
-        page = self.public_page(url) if url else None
+        # PubMed landing pages frequently return HTTP 203 to automated clients.
+        # When author-linked PubMed/XML or another bibliographic API already
+        # resolved the record, fetching that HTML adds latency but no evidence.
+        host = (urlparse(url).hostname or '').lower()
+        skip_redundant_pubmed_page = (
+            host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
+            and bool(pubmed or europe or cross or oa))
+        page = self.public_page(url) if url and not skip_redundant_pubmed_page else None
         if page:
             meta = page['meta']
             doi = doi or normalize_doi((meta.get('citation_doi') or [''])[0])
