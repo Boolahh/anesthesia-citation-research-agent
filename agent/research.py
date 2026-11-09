@@ -876,11 +876,29 @@ class Bibliography:
             put('AD', 'Conference abstract or proceedings', 'Crossref', cr_url)
         elif 'ncbi.nlm.nih.gov/books/' in evidence.get('source_url', ''):
             put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)', 'source URL', evidence.get('source_url', ''))
-        elif page and any(x in (urlparse(evidence.get('source_url', '')).hostname or '').lower() for x in ('asahq', 'apsf', 'ficm', 'openanesthesia', 'entnet')):
-            put('AD', 'Professional society or organization webpage', 'source domain', evidence.get('source_url', ''))
+        elif page and first:
+            source_host = (urlparse(evidence.get('source_url', '')).hostname or '').lower()
+            url_source = evidence.get('source_url', '')
+            # Explicitly identifiable source PROVIDERS, not guesses from the
+            # citation number or a generic article title. All are proposals.
+            if source_host == 'www.msdmanuals.com' or source_host.endswith('.msdmanuals.com'):
+                put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                    'linked resource provider', url_source)
+            elif any(x in source_host for x in ('asahq.org', 'apsf.org', 'ficm.ac.uk',
+                                                'openanesthesia.org', 'entnet.org',
+                                                'asra.com', 'nysora.com')):
+                put('AD', 'Professional society or organization webpage',
+                    'recognized clinical education / society domain', url_source)
+            elif (source_host.endswith('.nhs.uk') or source_host.endswith('.gov')
+                  or source_host.endswith('.gov.au') or source_host.endswith('.gov.tw')):
+                put('AD', 'Government or public-health agency document',
+                    'official public-agency domain', url_source)
+            if rows['AD'] != 'NR':
+                review_flags.append('Website document type inferred from verified URL domain; reviewer must confirm')
         if rows['AD'] in ('Guideline', 'Consensus statement', 'Textbook or book chapter',
                           'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
-                          'Professional society or organization webpage'):
+                          'Professional society or organization webpage',
+                          'Government or public-health agency document'):
             put('AE', 'Not a research study (guideline, textbook, website...)', 'type-based coding', pm_url or cr_url)
         elif any('randomized controlled trial' in x or 'randomised controlled trial' in x for x in publication_types):
             put('AE', 'Randomized controlled trial', 'PubMed publication type', pm_url)
@@ -1028,7 +1046,8 @@ class Bibliography:
         if status in oa_map:
             put('BF', oa_map[status], 'OpenAlex OA status', oa_url)
         elif rows['AD'] in ('Professional society or organization webpage',
-                             'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)'):
+                             'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                             'Government or public-health agency document'):
             put('BF', 'Not applicable (not a scholarly publication)', 'source category', evidence.get('source_url', ''))
         evidence['field_provenance'] = provenance
         evidence['review_flags'] = review_flags
