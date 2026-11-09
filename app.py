@@ -93,7 +93,8 @@ def result_zip(report_dir, workbook):
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
                      'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
                      'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv',
-                     'source_alias_review.csv'):
+                     'source_alias_review.csv', 'first_author_source_coverage.csv',
+                     'source_access_review.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -189,7 +190,7 @@ with st.form('agent_form'):
         inspect_pdfs = st.checkbox(
             'Inspect linked source PDFs (optional; potentially slower)',
             value=False,
-            help='Download up to 10 MB from a linked public PDF only when bibliographic records are missing. '
+            help='Download up to 24 MB from a linked public PDF only when bibliographic records are missing. '
                  'A plausible first-page title is still a reviewer-only proposal.')
         max_sources = st.number_input('Maximum publication research lookups (0 = all)',
                                       min_value=0, max_value=3500, value=10,
@@ -281,6 +282,8 @@ if submit:
                             'source_quality': (reports/'source_quality_review.csv').read_bytes(),
                             'source_level': (reports/'source_level_research.csv').read_bytes(),
                             'source_alias': (reports/'source_alias_review.csv').read_bytes(),
+                            'first_author_sources': (reports/'first_author_source_coverage.csv').read_bytes(),
+                            'source_access': (reports/'source_access_review.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -318,6 +321,21 @@ if result:
             f"{report['first_author_country_rows']}/{report['citations_extracted']} citations; "
             f"last-author country for {report.get('last_author_country_rows', 0)}/"
             f"{report['citations_extracted']}. Provisional country matches require human verification."
+        )
+    if 'candidate_publications_with_first_author_country' in report:
+        st.caption(
+            f"Source-level geography (provisional): "
+            f"{report['candidate_publications_with_first_author_country']} "
+            f"identifier-grouped candidate publications with first-author country "
+            f"versus {report.get('first_author_country_rows', 0)} citation occurrences. "
+            f"These are not independently verified publication counts."
+        )
+    if report.get('unresolved_downloadable_source_identities', 0):
+        st.warning(
+            f"Research gap: {report['unresolved_downloadable_source_identities']} "
+            f"distinct source link(s) appear to be PDFs or downloadable institutional documents. "
+            f"Review source_access_review.csv; a targeted run with Inspect linked source PDFs "
+            f"can recover bounded document evidence but may take longer."
         )
     if report.get('short_or_generic_source_labels'):
         st.warning(
@@ -371,6 +389,12 @@ if result:
             file_name='source_level_research.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download potential same-source aliases (CSV)', result['source_alias'],
             file_name='source_alias_review.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download unique candidate first-author countries (CSV)',
+            result['first_author_sources'], file_name='first_author_source_coverage.csv',
+            mime='text/csv', use_container_width=True)
+        st.download_button('Download unresolved source-access review (CSV)',
+            result['source_access'], file_name='source_access_review.csv',
+            mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])
