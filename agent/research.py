@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 
 from .pdf_extract import DOI_RE, PMID_RE
 from .workbook import GREEN_COLS
+from .pdf_publication import inspect_public_pdf, plausible_document_title
 
 USER_AGENT = 'AnesthesiaCitationBiasResearchAgent/2.0 (evidence-traceable, human-verified)'
 MAX_RESPONSE = 2_000_000
@@ -388,12 +389,14 @@ def parse_pubmed_xml(xml_text):
 
 
 class Bibliography:
-    def __init__(self, countries, cache_dir, email='', timeout=18, offline=False):
+    def __init__(self, countries, cache_dir, email='', timeout=18, offline=False,
+                 inspect_linked_pdfs=False):
         self.countries = countries
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
         self.offline = offline
+        self.inspect_linked_pdfs = bool(inspect_linked_pdfs and not offline)
         self.email = email
         self.s = requests.Session()
         self.s.headers.update({'User-Agent': USER_AGENT + (f' mailto:{email}' if email else '')})
@@ -443,7 +446,14 @@ class Bibliography:
                         if resp.status_code != 200:
                             self.events.append({'url': address, 'status': 'http_'+str(resp.status_code)})
                             return None
-                        if 'text/html' in resp.headers.get('Content-Type', '') and accept == 'application/json':
+                        content_type = resp.headers.get('Content-Type', '').lower()
+                        # Binary PDFs are not HTML and should not be consumed by
+                        # the 2 MB page-metadata reader. An optional bounded
+                        # PDF-specific parser handles them instead.
+                        if 'application/pdf' in content_type and 'application/pdf' not in accept:
+                            self.events.append({'url': address, 'status': 'pdf_requires_optin'})
+                            return None
+                        if 'text/html' in content_type and accept == 'application/json':
                             return None
                         data = bytearray()
                         for piece in resp.iter_content(65536):
@@ -630,7 +640,19 @@ class Bibliography:
         skip_redundant_pubmed_page = (
             host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
             and bool(pubmed or europe or cross or oa))
-        page = self.public_page(url) if url and not skip_redundant_pubmed_page else None
+        is_pdf_url = urlparse(url).path.lower().endswith('.pdf')
+        page = (self.public_page(url)
+                if url and not skip_redundant_pubmed_page and not is_pdf_url else None)
+        if self.inspect_linked_pdfs and any(
+                event.get('status') == 'pdf_requires_optin'
+                for event in self.events):
+            is_pdf_url = True
+        pdf_info = None
+        if (is_pdf_url and self.inspect_linked_pdfs and url
+                and not (pubmed or europe or cross or oa)):
+            pdf_info = inspect_public_pdf(url, self.s, public_dns_destination)
+            self.events.append({
+                'url': url, 'status': 'pdf_' + pdf_info.get('status', 'unknown')})
         if page:
             meta = page['meta']
             doi = doi or normalize_doi((meta.get('citation_doi') or [''])[0])
@@ -748,6 +770,7 @@ class Bibliography:
             match['status'] = 'title_candidate_unverified'
         result = {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
                   'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
+                  'public_pdf': pdf_info,
                   'source_url': url if safe_url(url) else '', 'match': match,
                   'lookup_events': list(self.events), 'lookup_performed': not self.offline}
         self._source_memo[memo_key] = deepcopy(result)
@@ -803,6 +826,7 @@ class Bibliography:
         pm = evidence.get('pubmed') or {}
         ep = evidence.get('europepmc') or {}
         page = evidence.get('public_page') or {}
+        public_pdf = evidence.get('public_pdf') or {}
         rows = {c: 'NR' for c in GREEN_COLS}
         provenance = {}
         review_flags = []
@@ -832,14 +856,18 @@ class Bibliography:
         page_title = valid_public_page_title(
             (page_meta.get('og:title') or page_meta.get('dc.title') or
              [page.get('title') or ''])[0])
-        first = official_title or page_title
+        pdf_title = plausible_document_title(public_pdf.get('title') or '')
+        first = official_title or page_title or pdf_title
         title_url = pm_url or oa_url or cr_url or evidence.get('source_url', '')
         put('Z', first or 'NOT FOUND',
             'PubMed / Crossref / Europe PMC / publisher' if official_title else
-            'Original linked webpage title (unverified)' if page_title else 'no matching title',
+            'Original linked webpage title (unverified)' if page_title else
+            'Original linked PDF metadata title (unverified)' if pdf_title else 'no matching title',
             title_url)
         if page_title and not official_title:
             review_flags.append('Title obtained from linked webpage; confirm identity and source type manually')
+        if pdf_title and not (official_title or page_title):
+            review_flags.append('Title obtained from PDF metadata and first-page text; verify full source and identity manually')
 
         if pm.get('year'):
             put('AA', pm['year'], 'PubMed', pm_url, pm.get('year_basis', ''))
