@@ -563,7 +563,8 @@ RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
     'informative_green_fields','metadata_sources','source_document_status',
-    'source_document_title_hint','review_reasons',
+    'source_document_title_hint','source_document_kind','source_document_version',
+    'review_reasons',
 ]
 
 
@@ -617,6 +618,8 @@ def _research_audit(rows, proposals):
             'metadata_sources':'; '.join(sources),
             'source_document_status':((proposed or {}).get('source_document') or {}).get('status',''),
             'source_document_title_hint':((proposed or {}).get('source_document') or {}).get('title_hint',''),
+            'source_document_kind':((proposed or {}).get('source_document') or {}).get('document_kind',''),
+            'source_document_version':((proposed or {}).get('source_document') or {}).get('document_version',''),
             'review_reasons':'; '.join(str(x) for x in reasons[:12]),
         })
     return result
