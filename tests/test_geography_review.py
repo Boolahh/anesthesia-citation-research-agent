@@ -45,3 +45,25 @@ class GeographicReviewTests(TestCase):
         self.assertEqual(output[1]['review_priority'], 'High - primary outcome missing')
         self.assertEqual(output[2]['review_priority'], 'Applicability review')
         self.assertEqual(output[1]['first_author_country'], 'NR')
+
+
+    def test_edited_book_without_individual_first_author_requires_applicability_review(self):
+        class EditedVolume:
+            existing = {('DSK', 'Q03', 1): 14}
+            def get_row(self, rownum):
+                return {
+                    'Z':'Australasian Anaesthesia 2025',
+                    'AD':'Textbook or book chapter',
+                    'AL':'NR', 'AN':'NR',
+                }
+        row = [{
+            'tool':'DSK','question':'Q03','order':1,
+            'citation':'7','url':'https://www.anzca.edu.au/2025_blue_book_pdf.pdf',
+        }]
+        proposal = [{
+            'tool':'DSK','question':'Q03','order':1,'written_to_workbook':True,
+            'source_document':{'status':'read','document_kind':'edited_book_compilation'},
+        }]
+        result = _geography_review(row, proposal, EditedVolume())
+        self.assertEqual(result[0]['review_priority'], 'Applicability review')
+        self.assertIn('whether an individual first author', result[0]['review_action'])
