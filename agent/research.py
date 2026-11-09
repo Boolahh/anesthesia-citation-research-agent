@@ -202,13 +202,13 @@ def explicit_source_type_from_published_title(title):
 
 def valid_public_page_title(value):
     """Reject navigation/access/error titles; never treat generic HTML as a paper."""
-    title = unescape(re.sub(r'\\s+', ' ', str(value or ''))).strip(' -|.:')
+    title = unescape(re.sub(r'\s+', ' ', str(value or ''))).strip(' -|.:')
     if not 18 <= len(title) <= 240 or len(re.findall(r'[A-Za-z]{3,}', title)) < 3:
         return ''
-    if re.search(r'^(?:403|404|500|503)\\b|\\b(?:access denied|not found|page not found|'
+    if re.search(r'^(?:403|404|500|503)\b|\b(?:access denied|not found|page not found|'
                  r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
                  r'enable javascript|request blocked|website unavailable|'
-                 r'too many requests|privacy policy|cookie preferences)\\b', title, re.I):
+                 r'too many requests|privacy policy|cookie preferences)\b', title, re.I):
         return ''
     return title
 
