@@ -457,6 +457,10 @@ class Bibliography:
                             return None
                         data = bytearray()
                         for piece in resp.iter_content(65536):
+                            if (not data and piece.startswith(b'%PDF') and
+                                    'text/html' in accept):
+                                self.events.append({'url': address, 'status': 'pdf_requires_optin'})
+                                return None
                             data.extend(piece)
                             if len(data) > MAX_RESPONSE:
                                 self.events.append({'url': address, 'status': 'too_large'})
