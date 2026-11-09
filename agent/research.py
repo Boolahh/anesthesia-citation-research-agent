@@ -220,10 +220,12 @@ def pubmed_id_from_source_link(url):
         match = re.fullmatch(r'/article/MED/(\d{6,9})', path, re.I)
         if match:
             return match.group(1), 'Europe PMC MED record locator'
-    if host == 'pesquisa.bvsalud.org':
-        match = re.search(r'/resource/[^/]+/mdl-(\d{6,9})$', path, re.I)
+    if host in ('pesquisa.bvsalud.org', 'busqueda.tmgl.org'):
+        match = re.search(r'/(?:resource|portal/resource)/[^/]+/mdl-(\d{6,9})$', path, re.I)
         if match:
-            return match.group(1), 'BVS MEDLINE index locator'
+            return match.group(1), ('BVS MEDLINE index locator'
+                                    if host == 'pesquisa.bvsalud.org'
+                                    else 'TMG MEDLINE index locator (unverified mirror)')
     if host == 'https-pubmed-ncbi-nlm-nih-gov-443.webvpn.ynu.edu.cn':
         match = re.fullmatch(r'/(\d{6,9})', path)
         if match:
