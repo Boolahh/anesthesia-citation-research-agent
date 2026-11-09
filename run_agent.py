@@ -435,7 +435,7 @@ def _source_quality_review(rows):
         num = identity_counts[(item['tool'], item['question'], ident)]
         expected_numbered = bool(
             item.get('extraction_method') == 'deepseek_numbered_link'
-            and re.fullmatch(r'\\d{1,3}', str(item.get('citation') or '')))
+            and re.fullmatch(r'\d{1,3}', str(item.get('citation') or '')))
         # DeepSeek and other numbered-link exports intentionally show a
         # superscript number rather than an inline article title. This is
         # not a defective PDF extraction; matching the linked publication
