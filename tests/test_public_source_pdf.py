@@ -136,6 +136,33 @@ class PublicSourcePDFTests(TestCase):
         self.assertEqual(result['title'], 'Australasian Anaesthesia 2025')
         self.assertEqual(result['document_kind'], 'edited_book_compilation')
 
+    def test_official_regional_protocol_keeps_document_version_without_guessing_author(self):
+        heading = 'Massiv blodning - Anestesirutin'
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((42, 100), heading, fontsize=21)
+            page.insert_text((42, 140), 'Version: 7.0', fontsize=10)
+            doc.set_metadata({'title': ''})
+            binary = doc.tobytes()
+        session=Mock()
+        session.get.return_value=Response(binary)
+        url=('https://mellanarkiv-offentlig.vgregion.se/alfresco/SURROGATE/'
+             'Massiv%20blodning%20-%20Anestesirutin.pdf')
+        evidence=inspect_public_pdf(url,session,lambda _: True)
+        self.assertEqual(evidence['title'],heading)
+        self.assertEqual(evidence['document_kind'],'regional_clinical_protocol')
+        self.assertEqual(evidence['document_version'],'7.0')
+        self.assertNotIn('doi',evidence)
+        with TemporaryDirectory() as tmp:
+            engine=Bibliography({},Path(tmp),offline=True)
+            proposed=engine.baseline_green({
+                'doi':'','pmid':'','public_pdf':evidence,'source_url':url,
+                'crossref':None,'openalex':None,'pubmed':None,'europepmc':None})
+        self.assertEqual(proposed['AD'], 'Government or public-health agency document')
+        self.assertEqual(proposed['AE'],'Not a research study (guideline, textbook, website...)')
+        self.assertEqual(proposed['AN'],'NR')
+        self.assertEqual(proposed['AL'],'NR')
+
     def test_edited_volume_never_implies_first_author_or_author_country(self):
         with TemporaryDirectory() as tmp:
             engine = Bibliography({}, Path(tmp), offline=False,
