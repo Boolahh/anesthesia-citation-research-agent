@@ -196,10 +196,10 @@ def inspect_public_pdf(url, session, safe_destination, max_bytes=MAX_PDF_BYTES,
                 # type, NOT evidence of a personal author or study design.
                 host = (urlparse(url).hostname or '').lower()
                 if (title and host == 'mellanarkiv-offentlig.vgregion.se'
-                        and re.search(r'\\banestesirutin\\b', title, re.I)):
+                        and re.search(r'\banestesirutin\b', title, re.I)):
                     result['document_kind'] = 'regional_clinical_protocol'
                     first_text = doc[0].get_text('text')[:12000]
-                    version = re.search(r'\\bVersion\\s*:\\s*(\\d+(?:\\.\\d+)?)',
+                    version = re.search(r'\bVersion\s*:\s*(\d+(?:\.\d+)?)',
                                         first_text, re.I)
                     if version:
                         result['document_version'] = version.group(1)
