@@ -964,14 +964,15 @@ class Bibliography:
         put('Z', first or 'NOT FOUND',
             'PubMed / Crossref / Europe PMC / publisher' if official_title else
             'Original linked webpage title (unverified)' if page_title else
-            'Original linked PDF metadata title (unverified)' if pdf_title else 'no matching title',
-            title_url)
+            'Original linked PDF title proposal (unverified)' if pdf_title else 'no matching title',
+            title_url,
+            (public_pdf.get('title_basis') or '') if pdf_title and not official_title else '')
         if page_title and not official_title:
             review_flags.append('Title obtained from linked webpage; confirm identity and source type manually')
         if pdf_title and not (official_title or page_title):
             basis = str(public_pdf.get('title_basis') or '')
             review_flags.append('Provisional title obtained from linked PDF: ' + basis +
-                                '; verify source identity, version, authorship and citation correctness')
+                                '; verify full source identity, version, authorship and citation correctness')
             if '/draft-guidelines/' in (urlparse(evidence.get('source_url', '')).path or '').lower():
                 review_flags.append(
                     'Original AI hyperlink points to a draft guideline PDF. '
@@ -984,7 +985,7 @@ class Bibliography:
         elif ep.get('pubYear'):
             put('AA', ep['pubYear'], 'Europe PMC', 'https://europepmc.org/article/MED/'+str(evidence.get('pmid') or ''))
         elif (public_pdf.get('document_kind') == 'edited_book_compilation'
-              and re.fullmatch(r'20\\d{2}', str(public_pdf.get('publication_year') or ''))):
+              and re.fullmatch(r'20\d{2}', str(public_pdf.get('publication_year') or ''))):
             put('AA', public_pdf['publication_year'], 'ANZCA source PDF frontmatter (unverified)',
                 evidence.get('source_url', ''), 'edition year printed in publisher-hosted PDF')
         else:
