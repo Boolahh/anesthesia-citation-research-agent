@@ -50,6 +50,30 @@ def _link_groups(page):
     return grouped
 
 
+def looks_like_numbered_link_export(pages):
+    """Detect nested numbered citation links without guessing a model layout.
+
+    This is a conservative *candidate* detector for other platforms. An
+    unfamiliar provider still requires a real-PDF manual pilot; a tool name
+    alone never guarantees that its PDF hyperlinks encode citations.
+    """
+    total = matched = nested = 0
+    for page in pages:
+        numbers = _number_spans(page)
+        for group in _link_groups(page):
+            total += 1
+            if len(group['boxes']) >= 2:
+                nested += 1
+            rect = min(group['boxes'], key=lambda area: area.get_area())
+            x = (rect.x0 + rect.x1) / 2
+            y = (rect.y0 + rect.y1) / 2
+            if any(abs((box.x0 + box.x1)/2 - x) <= 3 and
+                   abs((box.y0 + box.y1)/2 - y) <= 7
+                   for _, box in numbers):
+                matched += 1
+    return total >= 3 and matched / total >= .85 and nested / total >= .85
+
+
 def extract_deepseek_numbered(pages):
     """Return observed citation occurrences and extraction-review warnings.
 

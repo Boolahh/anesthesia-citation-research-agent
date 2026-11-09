@@ -11,9 +11,14 @@ from zipfile import ZipFile, ZIP_DEFLATED
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import threading
+import queue
+import time
+from collections import deque
 
 import streamlit as st
 from agent.workbook import TemplateWorkbook
@@ -94,10 +99,58 @@ def result_zip(report_dir, workbook):
     return output.getvalue()
 
 
-def run_locally(command, environment):
-    """Run in a subprocess and retain logs for diagnosis; no secrets in stdout."""
-    return subprocess.run(command, env=environment, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, timeout=3600, cwd=str(ROOT))
+def run_locally(command, environment, on_line=None):
+    """Stream progress without blocking the Streamlit page until completion.
+
+    Read stdout on a daemon thread; the foreground loop retains a hard timeout
+    even if a remote API call stops producing output. Keep only the latest
+    diagnostic lines in memory, never API credentials.
+    """
+    env = dict(environment)
+    env['PYTHONUNBUFFERED'] = '1'
+    args = list(command)
+    if args and args[0] == sys.executable:
+        args.insert(1, '-u')
+    process = subprocess.Popen(
+        args, env=env, text=True, encoding='utf-8', errors='replace',
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(ROOT), bufsize=1)
+    messages = queue.Queue()
+    recent = deque(maxlen=700)
+
+    def read_stream():
+        try:
+            for line in process.stdout:
+                messages.put(line)
+        finally:
+            messages.put(None)
+
+    reader = threading.Thread(target=read_stream, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + 3600
+    complete = False
+    try:
+        while not complete:
+            if time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(args, 3600)
+            try:
+                line = messages.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if line is None:
+                complete = True
+                continue
+            recent.append(line)
+            if on_line:
+                on_line(line.strip())
+        code = process.wait(timeout=max(1, deadline - time.monotonic()))
+        return subprocess.CompletedProcess(args, code, ''.join(recent))
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+
 
 
 st.set_page_config(page_title='Anesthesia Citation Research Agent', page_icon='📚', layout='wide')
@@ -132,6 +185,11 @@ with st.form('agent_form'):
             format_func=lambda v: 'Only human-verified real sources (recommended)' if v == 'verified-only' else 'Provisional source proposals (requires review)')
         offline = st.checkbox('Offline: no web / API requests', value=False)
         no_ai = st.checkbox('Do not use paid AI API', value=True)
+        inspect_pdfs = st.checkbox(
+            'Inspect linked source PDFs (optional; potentially slower)',
+            value=False,
+            help='Download up to 10 MB from a linked public PDF only when bibliographic records are missing. '
+                 'A plausible first-page title is still a reviewer-only proposal.')
         max_sources = st.number_input('Maximum publication research lookups (0 = all)',
                                       min_value=0, max_value=3500, value=10,
                                       help='10 (default) attempts only the first 10 eligible citations. '
@@ -178,10 +236,34 @@ if submit:
                         command.append('--offline')
                     if no_ai:
                         command.append('--no-ai')
+                    if inspect_pdfs:
+                        command.append('--inspect-linked-pdfs')
                     env = os.environ.copy()
                     if api_key:
                         env['OPENAI_API_KEY'] = api_key
-                    proc = run_locally(command, env)
+                    current_progress = st.empty()
+                    progress_bar = st.progress(0)
+                    progress_state = {'researched': 0, 'total': None}
+
+                    def show_progress(line):
+                        if line.startswith('[RESEARCH]'):
+                            count = re.search(r'eligible=(\\d+)', line)
+                            if count:
+                                progress_state['total'] = int(count.group(1))
+                        elif line.startswith('[SOURCE]'):
+                            progress_state['researched'] += 1
+                        elif line.startswith('[PDF]'):
+                            current_progress.caption(line[:180])
+                        if line.startswith('[SOURCE]') or line.startswith('[RESEARCH]'):
+                            current_progress.caption(
+                                f"Publication research: {progress_state['researched']}" +
+                                (f" / {progress_state['total']} eligible citations"
+                                 if progress_state['total'] is not None else ' citations processed'))
+                            if progress_state['total']:
+                                progress_bar.progress(min(1.0, progress_state['researched'] / progress_state['total']))
+                    proc = run_locally(command, env, on_line=show_progress)
+                    progress_bar.empty()
+                    current_progress.empty()
                     if proc.returncode:
                         st.error('The run failed; processing log below.')
                         st.code(proc.stdout[-12000:])

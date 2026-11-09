@@ -31,7 +31,7 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.1.0'
+APP_VERSION = '2.2.0'
 
 
 def write_json(path, payload):
@@ -251,7 +251,9 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     proposed = refine_green(proposed, workbook)
     if journal_evidence:
         proposed = supplement_journal_fields(proposed, evidence, journal_evidence, workbook.data.countries)
-    has_metadata = any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+    has_metadata = (any(evidence.get(k) for k in
+                        ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
+                    or bool((evidence.get('public_pdf') or {}).get('title')))
     informative_fields = sum(value not in ('', 'NR', 'NOT FOUND', 'Not applicable', None)
                              for value in proposed.values())
     critical = any('conflicts with' in msg or 'differs materially' in msg for msg in warnings)
@@ -601,6 +603,8 @@ def main(argv=None):
     ap.add_argument('--max-docs', type=int, default=0)
     ap.add_argument('--contact-email', default=os.getenv('RESEARCH_CONTACT_EMAIL', ''))
     ap.add_argument('--journal-evidence', help='Optional investigator-verified SCImago and licensed 2026 JCR CSV')
+    ap.add_argument('--inspect-linked-pdfs', action='store_true',
+                    help='Opt-in bounded public source-PDF metadata lookup (slower; review required)')
     args = ap.parse_args(argv)
     if args.max_sources < 0 or args.max_docs < 0:
         ap.error('max-sources/max-docs must be nonnegative')
@@ -650,11 +654,16 @@ def main(argv=None):
     researchable_count = 0
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
-                                   offline=args.offline)
+                                   offline=args.offline,
+                                   inspect_linked_pdfs=args.inspect_linked_pdfs)
         journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
         # Compute eligibility *after* considering column X, so reports can
         # distinguish skipped citations from those left out by the research cap.
         researchable_count = sum(research_candidate(item, wb)[2] for item in rows)
+        active_count = (min(args.max_sources, researchable_count)
+                        if args.max_sources else researchable_count)
+        print(f'[RESEARCH] eligible={active_count} total={researchable_count} '
+              f'model={args.tool or "mixed"} policy={args.green_policy}', flush=True)
         attempts = 0
         for item in rows:
             if args.max_sources and attempts >= args.max_sources:
@@ -685,14 +694,16 @@ def main(argv=None):
                                      'warning': ('Publication identity mismatch; green fields withheld pending review'
                                                  if identity_problem else
                                                  'Metadata retrieved without informative fields; no green data written')})
-                print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
-                      f'{"written" if written else "proposal only"} metadata={info["has_metadata"]}')
             except Exception as exc:
                 record['error'] = f'{type(exc).__name__}: {str(exc)[:250]}'
                 record['written_to_workbook'] = False
                 warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
                                  'warning': 'Research exception: '+record['error']})
             research.append(record)
+            print(f'[SOURCE] {key[0]}/{key[1]} #{key[2]} '
+                  f'{"written" if record.get("written_to_workbook") else "proposal only"} '
+                  f'metadata={bool(record.get("has_metadata"))} '
+                  f'{"ERROR" if record.get("error") else "OK"}', flush=True)
             # Crash-recovery checkpoint: proposals are *not* accepted/verified by this.
             write_json(report_dir/'research_proposals.json', research)
     if not research:
@@ -755,6 +766,10 @@ def main(argv=None):
         'cached_lookup_reuses': sum(
             sum(event.get('status') == 'cache_hit' for event in item.get('lookup_events', []))
             for item in research),
+        'source_memo_reuses': sum(
+            sum(event.get('status') == 'source_memo_hit'
+                for event in item.get('lookup_events', []))
+            for item in research),
         'sources_with_metadata': sum(bool(item.get('has_metadata')) for item in research),
         'rows_written_green': sum(bool(item.get('written_to_workbook')) for item in research),
         'informative_green_cells_in_output_workbook': informative_output_cells,
@@ -773,6 +788,7 @@ def main(argv=None):
         'green_cells_policy': args.green_policy, 'stages': args.stage,
         'investigator_journal_evidence_used': bool(args.journal_evidence),
         'ai_used': bool(ai), 'offline': args.offline,
+        'inspect_linked_pdfs': bool(args.inspect_linked_pdfs),
         'tools_detected': {k: sorted(v) for k,v in tool_coverage.items()},
         'warning_count': len(warnings)+len(wb.warnings),
         'warnings': warnings+[{'warning': x} for x in wb.warnings],

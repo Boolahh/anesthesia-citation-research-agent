@@ -7,7 +7,7 @@ For unknown/incomplete layouts, preserve candidates plus explicit review warning
 from __future__ import annotations
 
 from collections import defaultdict
-from agent.deepseek_numbered import extract_deepseek_numbered
+from agent.deepseek_numbered import extract_deepseek_numbered, looks_like_numbered_link_export
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
@@ -420,9 +420,15 @@ def _parse_pages(pages, tool, question, path, api=None):
     deepseek_format = (tool == 'DSK' and any(
         re.search(r'Found\s+\d+\s+web\s+pages', p.get_text(), re.I)
         for p in pages))
-    if deepseek_format:
+    generic_numbered = (not deepseek_format and tool not in ('CGP', 'CLG')
+                        and looks_like_numbered_link_export(pages))
+    if deepseek_format or generic_numbered:
         annotations, deepseek_warnings = extract_deepseek_numbered(pages)
         warnings.extend(deepseek_warnings)
+        if generic_numbered:
+            warnings.append(
+                'Unvalidated numbered-link export detected for ' + tool +
+                '; verify every citation marker and URL before study use')
         # Fallback is for exports not matching this numbered-link layout.
         if not annotations:
             annotations = extract_links(pages)

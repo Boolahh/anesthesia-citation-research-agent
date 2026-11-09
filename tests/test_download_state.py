@@ -1,4 +1,5 @@
 """Regression: all three downloads remain available after a Streamlit rerun."""
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
@@ -48,6 +49,18 @@ class TestDownloadPersistence(TestCase):
             }))
             return SimpleNamespace(returncode=0, stdout='[SUMMARY] complete')
 
+        class FakePopen:
+            def __init__(self, command, **kwargs):
+                result = fake_process(command)
+                self.returncode = result.returncode
+                self.stdout = StringIO('[PDF] synthetic.pdf [CGP]: 1 citation candidate(s)\\n')
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
         real_read_bytes = Path.read_bytes
 
         def read_bytes(self):
@@ -59,7 +72,7 @@ class TestDownloadPersistence(TestCase):
         try:
             with patch.dict(sys.modules, {'streamlit': st}), \
                  patch('agent.workbook.TemplateWorkbook', FakeTemplate), \
-                 patch('subprocess.run', side_effect=fake_process), \
+                 patch('subprocess.Popen', side_effect=FakePopen), \
                  patch.object(Path, 'read_bytes', read_bytes):
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
                 self.assertEqual(st.download_button.call_count, 9)

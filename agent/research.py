@@ -7,9 +7,10 @@ accompanied by field-level provenance and unresolved ambiguity flags.
 from __future__ import annotations
 
 from collections import OrderedDict
+from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, unquote, quote
+from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag
 from xml.etree import ElementTree as ET
 import hashlib
 from html import unescape
@@ -25,6 +26,7 @@ from bs4 import BeautifulSoup
 
 from .pdf_extract import DOI_RE, PMID_RE
 from .workbook import GREEN_COLS
+from .pdf_publication import inspect_public_pdf, plausible_document_title
 
 USER_AGENT = 'AnesthesiaCitationBiasResearchAgent/2.0 (evidence-traceable, human-verified)'
 MAX_RESPONSE = 2_000_000
@@ -197,6 +199,19 @@ def explicit_source_type_from_published_title(title):
                  r'management|clinical|preoperative|postoperative)\b', value):
         return 'Guideline'
     return ''
+
+
+def valid_public_page_title(value):
+    """Reject navigation/access/error titles; never treat generic HTML as a paper."""
+    title = unescape(re.sub(r'\s+', ' ', str(value or ''))).strip(' -|.:')
+    if not 18 <= len(title) <= 240 or len(re.findall(r'[A-Za-z]{3,}', title)) < 3:
+        return ''
+    if re.search(r'^(?:403|404|500|503)\b|\b(?:access denied|not found|page not found|'
+                 r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
+                 r'enable javascript|request blocked|website unavailable|'
+                 r'too many requests|privacy policy|cookie preferences)\b', title, re.I):
+        return ''
+    return title
 
 
 def normalize_doi(s):
@@ -374,19 +389,27 @@ def parse_pubmed_xml(xml_text):
 
 
 class Bibliography:
-    def __init__(self, countries, cache_dir, email='', timeout=18, offline=False):
+    def __init__(self, countries, cache_dir, email='', timeout=18, offline=False,
+                 inspect_linked_pdfs=False):
         self.countries = countries
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
         self.offline = offline
+        self.inspect_linked_pdfs = bool(inspect_linked_pdfs and not offline)
         self.email = email
         self.s = requests.Session()
         self.s.headers.update({'User-Agent': USER_AGENT + (f' mailto:{email}' if email else '')})
         self.events = []
+        # Single-run evidence memo: repeated source occurrences remain separate
+        # workbook records, but should not repeat the same bibliography workflow.
+        self._source_memo = {}
 
     def _get(self, url, params=None, accept='application/json'):
         """Public GET with capped downloads, safe redirects, timeouts, retries, caching."""
+        # Fragment labels distinguish PDF click coordinates, not HTTP resources.
+        # The blue/original URL is kept unchanged elsewhere in the pipeline.
+        url = urldefrag(str(url or '')).url
         if not safe_url(url):
             self.events.append({'url': url, 'status': 'blocked_url'})
             return None
@@ -423,10 +446,21 @@ class Bibliography:
                         if resp.status_code != 200:
                             self.events.append({'url': address, 'status': 'http_'+str(resp.status_code)})
                             return None
-                        if 'text/html' in resp.headers.get('Content-Type', '') and accept == 'application/json':
+                        content_type = resp.headers.get('Content-Type', '').lower()
+                        # Binary PDFs are not HTML and should not be consumed by
+                        # the 2 MB page-metadata reader. An optional bounded
+                        # PDF-specific parser handles them instead.
+                        if 'application/pdf' in content_type and 'application/pdf' not in accept:
+                            self.events.append({'url': address, 'status': 'pdf_requires_optin'})
+                            return None
+                        if 'text/html' in content_type and accept == 'application/json':
                             return None
                         data = bytearray()
                         for piece in resp.iter_content(65536):
+                            if (not data and piece.startswith(b'%PDF') and
+                                    'text/html' in accept):
+                                self.events.append({'url': address, 'status': 'pdf_requires_optin'})
+                                return None
                             data.extend(piece)
                             if len(data) > MAX_RESPONSE:
                                 self.events.append({'url': address, 'status': 'too_large'})
@@ -521,10 +555,23 @@ class Bibliography:
     def metadata(self, citation):
         """Independent lookup pipeline: explicit IDs > PubMed > publisher > constrained title."""
         self.events = []
-        url = citation.get('url') or ''
-        if url == 'NR':
-            url = ''
+        original_url = citation.get('url') or ''
+        url = urldefrag(str(original_url)).url if original_url != 'NR' else ''
         raw = citation.get('citation') or ''
+        # Include the original as-cited text and identifiers in the memo key:
+        # a matching URL does not prove that two differently worded citations
+        # are bibliographically equivalent. Retain evidence-specific warnings.
+        memo_key = (
+            url, raw, str(citation.get('title') or ''),
+            str(citation.get('doi') or ''), str(citation.get('pmid') or ''),
+            bool(citation.get('source_url_verified')),
+        )
+        previous = self._source_memo.get(memo_key)
+        if previous is not None:
+            result = deepcopy(previous)
+            result['lookup_events'] = [{'url': url, 'status': 'source_memo_hit'}]
+            result['lookup_performed'] = False
+            return result
         # A human-supplied, independently verified X URL overrides original
         # as-cited DOI/PMID text, which can itself contain the study's errors.
         verified_url = bool(citation.get('source_url_verified'))
@@ -590,7 +637,26 @@ class Bibliography:
             result = self.fetch_json('https://api.openalex.org/works',
                 {'filter': 'pmid:https://pubmed.ncbi.nlm.nih.gov/'+pmid, 'per-page': 1})
             oa = next(iter((result or {}).get('results') or []), None)
-        page = self.public_page(url) if url else None
+        # PubMed landing pages frequently return HTTP 203 to automated clients.
+        # When author-linked PubMed/XML or another bibliographic API already
+        # resolved the record, fetching that HTML adds latency but no evidence.
+        host = (urlparse(url).hostname or '').lower()
+        skip_redundant_pubmed_page = (
+            host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
+            and bool(pubmed or europe or cross or oa))
+        is_pdf_url = urlparse(url).path.lower().endswith('.pdf')
+        page = (self.public_page(url)
+                if url and not skip_redundant_pubmed_page and not is_pdf_url else None)
+        if self.inspect_linked_pdfs and any(
+                event.get('status') == 'pdf_requires_optin'
+                for event in self.events):
+            is_pdf_url = True
+        pdf_info = None
+        if (is_pdf_url and self.inspect_linked_pdfs and url
+                and not (pubmed or europe or cross or oa)):
+            pdf_info = inspect_public_pdf(url, self.s, public_dns_destination)
+            self.events.append({
+                'url': url, 'status': 'pdf_' + pdf_info.get('status', 'unknown')})
         if page:
             meta = page['meta']
             doi = doi or normalize_doi((meta.get('citation_doi') or [''])[0])
@@ -706,10 +772,13 @@ class Bibliography:
             match['status'] = 'identifier_conflict'
         elif match['method'] in ('high_similarity_title_candidate','exact_title_pubmed_candidate'):
             match['status'] = 'title_candidate_unverified'
-        return {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
-                'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
-                'source_url': url if safe_url(url) else '', 'match': match,
-                'lookup_events': list(self.events), 'lookup_performed': not self.offline}
+        result = {'doi': doi, 'pmid': pmid, 'crossref': cross, 'openalex': oa,
+                  'europepmc': europe, 'pubmed': pubmed, 'public_page': page,
+                  'public_pdf': pdf_info,
+                  'source_url': url if safe_url(url) else '', 'match': match,
+                  'lookup_events': list(self.events), 'lookup_performed': not self.offline}
+        self._source_memo[memo_key] = deepcopy(result)
+        return result
 
     def _affiliation_country(self, text):
         """Classify only a terminal, explicit country in one author's address.
@@ -761,6 +830,7 @@ class Bibliography:
         pm = evidence.get('pubmed') or {}
         ep = evidence.get('europepmc') or {}
         page = evidence.get('public_page') or {}
+        public_pdf = evidence.get('public_pdf') or {}
         rows = {c: 'NR' for c in GREEN_COLS}
         provenance = {}
         review_flags = []
@@ -780,9 +850,29 @@ class Bibliography:
         pm_url = 'https://pubmed.ncbi.nlm.nih.gov/'+pm['pmid']+'/' if pm.get('pmid') else ''
         oa_url = oa.get('id') or ''
         cr_url = 'https://doi.org/'+evidence['doi'] if evidence.get('doi') else ''
-        first = pm.get('title') or oa.get('display_name') or ((cr.get('title') or [''])[0]) or ep.get('title') or \
-                ((page.get('meta') or {}).get('citation_title') or [''])[0]
-        put('Z', first or 'NOT FOUND', 'PubMed' if pm.get('title') else 'OpenAlex' if oa.get('display_name') else 'Crossref' if cr else 'Europe PMC / publisher', pm_url or oa_url or cr_url)
+        page_meta = page.get('meta') or {}
+        official_title = (pm.get('title') or oa.get('display_name') or
+                          ((cr.get('title') or [''])[0]) or ep.get('title') or
+                          (page_meta.get('citation_title') or [''])[0])
+        # Non-journal websites often supply a useful article title only in
+        # OpenGraph / DC / HTML <title>, not citation_* metadata. The title is
+        # merely a *provisional webpage label*, never proof of publication identity.
+        page_title = valid_public_page_title(
+            (page_meta.get('og:title') or page_meta.get('dc.title') or
+             [page.get('title') or ''])[0])
+        pdf_title = plausible_document_title(public_pdf.get('title') or '')
+        first = official_title or page_title or pdf_title
+        title_url = pm_url or oa_url or cr_url or evidence.get('source_url', '')
+        put('Z', first or 'NOT FOUND',
+            'PubMed / Crossref / Europe PMC / publisher' if official_title else
+            'Original linked webpage title (unverified)' if page_title else
+            'Original linked PDF metadata title (unverified)' if pdf_title else 'no matching title',
+            title_url)
+        if page_title and not official_title:
+            review_flags.append('Title obtained from linked webpage; confirm identity and source type manually')
+        if pdf_title and not (official_title or page_title):
+            review_flags.append('Title obtained from PDF metadata and first-page text; verify full source and identity manually')
+
         if pm.get('year'):
             put('AA', pm['year'], 'PubMed', pm_url, pm.get('year_basis', ''))
         elif oa.get('publication_year'):
@@ -818,11 +908,29 @@ class Bibliography:
             put('AD', 'Conference abstract or proceedings', 'Crossref', cr_url)
         elif 'ncbi.nlm.nih.gov/books/' in evidence.get('source_url', ''):
             put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)', 'source URL', evidence.get('source_url', ''))
-        elif page and any(x in (urlparse(evidence.get('source_url', '')).hostname or '').lower() for x in ('asahq', 'apsf', 'ficm', 'openanesthesia', 'entnet')):
-            put('AD', 'Professional society or organization webpage', 'source domain', evidence.get('source_url', ''))
+        elif page and first:
+            source_host = (urlparse(evidence.get('source_url', '')).hostname or '').lower()
+            url_source = evidence.get('source_url', '')
+            # Explicitly identifiable source PROVIDERS, not guesses from the
+            # citation number or a generic article title. All are proposals.
+            if source_host == 'www.msdmanuals.com' or source_host.endswith('.msdmanuals.com'):
+                put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                    'linked resource provider', url_source)
+            elif any(x in source_host for x in ('asahq.org', 'apsf.org', 'ficm.ac.uk',
+                                                'openanesthesia.org', 'entnet.org',
+                                                'asra.com', 'nysora.com')):
+                put('AD', 'Professional society or organization webpage',
+                    'recognized clinical education / society domain', url_source)
+            elif (source_host.endswith('.nhs.uk') or source_host.endswith('.gov')
+                  or source_host.endswith('.gov.au') or source_host.endswith('.gov.tw')):
+                put('AD', 'Government or public-health agency document',
+                    'official public-agency domain', url_source)
+            if rows['AD'] != 'NR':
+                review_flags.append('Website document type inferred from verified URL domain; reviewer must confirm')
         if rows['AD'] in ('Guideline', 'Consensus statement', 'Textbook or book chapter',
                           'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
-                          'Professional society or organization webpage'):
+                          'Professional society or organization webpage',
+                          'Government or public-health agency document'):
             put('AE', 'Not a research study (guideline, textbook, website...)', 'type-based coding', pm_url or cr_url)
         elif any('randomized controlled trial' in x or 'randomised controlled trial' in x for x in publication_types):
             put('AE', 'Randomized controlled trial', 'PubMed publication type', pm_url)
@@ -970,7 +1078,8 @@ class Bibliography:
         if status in oa_map:
             put('BF', oa_map[status], 'OpenAlex OA status', oa_url)
         elif rows['AD'] in ('Professional society or organization webpage',
-                             'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)'):
+                             'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                             'Government or public-health agency document'):
             put('BF', 'Not applicable (not a scholarly publication)', 'source category', evidence.get('source_url', ''))
         evidence['field_provenance'] = provenance
         evidence['review_flags'] = review_flags

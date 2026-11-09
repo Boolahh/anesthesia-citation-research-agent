@@ -90,6 +90,21 @@ class DeepSeekNumberedCitationTests(unittest.TestCase):
         self.assertTrue(all(row['extraction_method'] == 'deepseek_numbered_link'
                             for row in rows))
 
+    def test_other_ai_export_with_same_nested_numbered_layout_is_review_flagged(self):
+        path = self.sample([
+            (2, 150, 'https://pubmed.ncbi.nlm.nih.gov/12345678/', 0),
+            (4, 190, 'https://doi.org/10.1234/example', 0),
+            (2, 230, 'https://pubmed.ncbi.nlm.nih.gov/12345678/', 0),
+        ], heading='Independent generated clinical evidence summary')
+        rows, warnings = parse_pdf(path, 'GEM', {
+            'Q01': 'What strategies reduce postoperative nausea?'
+        })
+        self.assertEqual([row['citation'] for row in rows], ['2', '4', '2'])
+        self.assertTrue(any('Unvalidated numbered-link export' in w for w in warnings))
+        self.assertTrue(all(row['extraction_method'] == 'deepseek_numbered_link'
+                            for row in rows))
+        self.assertEqual([row['repeat'] for row in rows], ['N', 'N', 'Y'])
+
     def test_no_fake_citations_if_source_count_but_no_source_links(self):
         path = self.sample([])
         rows, warnings = parse_pdf(path, 'DSK', {
