@@ -61,6 +61,39 @@ class EvidenceMemoizationTests(TestCase):
             self.assertEqual(row['BE'], '')
             self.assertTrue(any('manually' in s for s in evidence['review_flags']))
 
+    def test_recognized_medical_education_site_is_proposed_not_assumed_study(self):
+        with TemporaryDirectory() as tmp:
+            client = self.engine(tmp)
+            with patch.object(client, 'public_page', return_value={
+                'title': 'Tracheal Intubation Techniques in Head and Neck Surgery',
+                'meta': {},
+            }):
+                evidence = client.metadata({
+                    'citation': '3', 'title': 'NR',
+                    'url': 'https://nysora.com/education-news/tracheal-intubation-techniques/'})
+            fields = client.baseline_green(evidence)
+            self.assertEqual(fields['AD'], 'Professional society or organization webpage')
+            self.assertEqual(fields['AE'], 'Not a research study (guideline, textbook, website...)')
+            self.assertEqual(fields['BF'], 'Not applicable (not a scholarly publication)')
+            self.assertEqual(fields['AN'], 'NR')
+            self.assertTrue(any('reviewer must confirm' in text
+                                for text in evidence['review_flags']))
+
+    def test_point_of_care_manual_is_not_mislabeled_journal_article(self):
+        with TemporaryDirectory() as tmp:
+            client = self.engine(tmp)
+            with patch.object(client, 'public_page', return_value={
+                'title': 'How to Perform Tracheal Intubation - Professional Manual',
+                'meta': {},
+            }):
+                evidence = client.metadata({
+                    'citation': '4', 'title': 'NR',
+                    'url': 'https://www.msdmanuals.com/professional/tracheal-intubation'})
+            fields = client.baseline_green(evidence)
+            self.assertEqual(
+                fields['AD'], 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)')
+            self.assertEqual(fields['AJ'], 'NR')
+
     def test_rejects_error_and_navigation_page_titles(self):
         for title in ('403 Access Denied', 'Just a moment - checking your browser',
                       'Sign In to Clinical Website', '404 page not found',
