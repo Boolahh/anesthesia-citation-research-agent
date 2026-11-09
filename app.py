@@ -92,7 +92,8 @@ def result_zip(report_dir, workbook):
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
                      'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
-                     'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv'):
+                     'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv',
+                     'source_alias_review.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -279,6 +280,7 @@ if submit:
                             'geography_review': (reports/'geography_review.csv').read_bytes(),
                             'source_quality': (reports/'source_quality_review.csv').read_bytes(),
                             'source_level': (reports/'source_level_research.csv').read_bytes(),
+                            'source_alias': (reports/'source_alias_review.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -325,6 +327,12 @@ if result:
             f"distinct source identities within questions. Review source_quality_review.csv "
             f"before treating occurrence counts as unique scholarly references."
         )
+    if report.get('possible_source_alias_groups', 0):
+        st.warning(
+            f"Potential source aliases: {report['possible_source_alias_groups']} proposed-title group(s) "
+            f"across distinct linked URLs. Review source_alias_review.csv before counting "
+            f"unique publications. Citation occurrences are never removed."
+        )
     if report.get('research_truncated_by_limit'):
         st.warning(
             f"Research stopped at your limit of {report.get('publication_lookup_limit')}. "
@@ -361,6 +369,8 @@ if result:
             file_name='source_quality_review.csv', mime='text/csv', use_container_width=True)
         st.download_button('Download unique-source research summary (CSV)', result['source_level'],
             file_name='source_level_research.csv', mime='text/csv', use_container_width=True)
+        st.download_button('Download potential same-source aliases (CSV)', result['source_alias'],
+            file_name='source_alias_review.csv', mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
             st.json(report['tools_detected'])

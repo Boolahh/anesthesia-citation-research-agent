@@ -10,7 +10,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag
+from urllib.parse import urljoin, urlparse, unquote, quote, urldefrag, parse_qs
 from xml.etree import ElementTree as ET
 import hashlib
 from html import unescape
@@ -201,15 +201,78 @@ def explicit_source_type_from_published_title(title):
     return ''
 
 
+def pubmed_id_from_source_link(url):
+    """Return a PubMed identifier and its original-URL locator basis.
+
+    Only recognized record URL *shapes* are accepted. A proxy/index link is
+    never treated as evidence that the article matches the AI citation;
+    it yields an independently retrieved PubMed candidate for human review.
+    """
+    parsed = urlparse(str(url or ''))
+    host = (parsed.hostname or '').lower()
+    path = unquote(parsed.path).rstrip('/')
+    if host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov'):
+        pattern = r'/(?:pubmed/)?(\d{6,9})$'
+        match = re.fullmatch(pattern, path)
+        if match:
+            return match.group(1), 'official PubMed record link'
+    if host in ('europepmc.org', 'www.europepmc.org', 'dev.europepmc.org'):
+        match = re.fullmatch(r'/article/MED/(\d{6,9})', path, re.I)
+        if match:
+            return match.group(1), 'Europe PMC MED record locator'
+    if host == 'pesquisa.bvsalud.org':
+        match = re.search(r'/resource/[^/]+/mdl-(\d{6,9})$', path, re.I)
+        if match:
+            return match.group(1), 'BVS MEDLINE index locator'
+    if host == 'https-pubmed-ncbi-nlm-nih-gov-443.webvpn.ynu.edu.cn':
+        match = re.fullmatch(r'/(\d{6,9})', path)
+        if match:
+            return match.group(1), 'institutional PubMed proxy link'
+    return '', ''
+
+
+def non_source_search_landing(url):
+    """Describe links to *search interfaces*, not individual publications.
+
+    Preserve these as-cited hyperlinks in blue. A search URL can be a
+    citation/link error; only the investigator can adjudicate that status.
+    Avoid searching the URL as if it identified an actual work.
+    """
+    parsed = urlparse(str(url or ''))
+    host = (parsed.hostname or '').lower()
+    path = parsed.path.lower().rstrip('/')
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov'):
+        if (path in ('', '/', '/pubmed') and
+                any(key in query for key in ('term', 'search', 'query'))):
+            return 'PubMed query results URL is not a specific cited publication'
+    if host in ('www.google.com', 'google.com', 'scholar.google.com'):
+        if path in ('/search', '/scholar', '/scholar_lookup'):
+            return 'Search engine results URL is not a specific cited publication'
+    if host in ('www.bing.com', 'bing.com') and path == '/search':
+        return 'Search engine results URL is not a specific cited publication'
+    if host in ('api.openalex.org', 'openalex.org') and path in ('/works', '/works/search'):
+        if any(key in query for key in ('search', 'filter', 'q')):
+            return 'OpenAlex works search URL is not a specific cited publication'
+    if re.search(r'/(?:search|searchresults|search-results)(?:/|$)', path):
+        if any(key in query for key in ('q', 'query', 'term', 'search', 'keyword')):
+            return 'Search listings page is not a specific cited publication'
+    return ''
+
+
 def valid_public_page_title(value):
     """Reject navigation/access/error titles; never treat generic HTML as a paper."""
     title = unescape(re.sub(r'\s+', ' ', str(value or ''))).strip(' -|.:')
     if not 18 <= len(title) <= 240 or len(re.findall(r'[A-Za-z]{3,}', title)) < 3:
         return ''
+    if re.search(r'(?:^search results?\b|[-|:]\s*search results?\s*(?:[-|:]|$))', title, re.I):
+        return ''
     if re.search(r'^(?:403|404|500|503)\b|\b(?:access denied|not found|page not found|'
                  r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
                  r'enable javascript|request blocked|website unavailable|'
-                 r'too many requests|privacy policy|cookie preferences)\b', title, re.I):
+                 r'too many requests|privacy policy|cookie preferences|'
+                 r'(?:^search results?(?:\s*[-|:]|\s+for\b))|'
+                 r'(?:[-|]\s*search results?\s*[-|]?\s*(?:pubmed|google|bing)))\b', title, re.I):
         return ''
     return title
 
@@ -572,15 +635,36 @@ class Bibliography:
             result['lookup_events'] = [{'url': url, 'status': 'source_memo_hit'}]
             result['lookup_performed'] = False
             return result
+        non_source_reason = non_source_search_landing(url)
+        if non_source_reason:
+            # Do not turn search-result lists (not even PubMed's own) into
+            # government documents or published papers.
+            result = {
+                'doi': '', 'pmid': '', 'crossref': None, 'openalex': None,
+                'europepmc': None, 'pubmed': None, 'public_page': None,
+                'public_pdf': None, 'source_url': url,
+                'match': {
+                    'method': 'none', 'status': 'non_source_search_results',
+                    'title_similarity': None, 'warnings': [non_source_reason],
+                },
+                'lookup_events': [{
+                    'url': url, 'status': 'not_single_source_search_results'}],
+                'lookup_performed': False,
+            }
+            self._source_memo[memo_key] = deepcopy(result)
+            return result
         # A human-supplied, independently verified X URL overrides original
         # as-cited DOI/PMID text, which can itself contain the study's errors.
         verified_url = bool(citation.get('source_url_verified'))
         issue_flags = []
         original_doi = normalize_doi(citation.get('doi')) or normalize_doi(raw)
         url_doi = normalize_doi(url)
-        url_pmid_match = re.search(
-            r'(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)/(\d{6,9})(?:[/#?]|$)', url, re.I)
-        url_pmid = url_pmid_match.group(1) if url_pmid_match else ''
+        url_pmid, locator_basis = pubmed_id_from_source_link(url)
+        locator_warnings = []
+        if url_pmid and locator_basis != 'official PubMed record link':
+            locator_warnings.append(
+                f'Candidate PMID {url_pmid} derived from {locator_basis}; '
+                'compare original linked record before accepting publication identity')
         original_pmid = str(citation.get('pmid') or '')
         original_pmid = original_pmid if original_pmid.isdigit() else ''
         if url_doi and original_doi and url_doi != original_doi:
@@ -642,8 +726,9 @@ class Bibliography:
         # resolved the record, fetching that HTML adds latency but no evidence.
         host = (urlparse(url).hostname or '').lower()
         skip_redundant_pubmed_page = (
-            host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
-            and bool(pubmed or europe or cross or oa))
+            bool(pubmed or europe or cross or oa) and
+            (host in ('pubmed.ncbi.nlm.nih.gov', 'www.ncbi.nlm.nih.gov')
+             or bool(url_pmid and locator_basis != 'official PubMed record link')))
         is_pdf_url = urlparse(url).path.lower().endswith('.pdf')
         page = (self.public_page(url)
                 if url and not skip_redundant_pubmed_page and not is_pdf_url else None)
@@ -671,7 +756,8 @@ class Bibliography:
                 oa_candidate = self.fetch_json('https://api.openalex.org/works/'+quote('https://doi.org/'+doi, safe=':/'))
                 oa = oa_candidate if oa_candidate and oa_candidate.get('id') else None
         match = {'method': 'reviewer_verified_URL' if verified_url else 'identifier' if doi or pmid else 'none',
-                 'status': 'review_required', 'title_similarity': None, 'warnings': list(issue_flags)}
+                 'status': 'review_required', 'title_similarity': None,
+                 'warnings': list(issue_flags) + locator_warnings}
         if verified_url and citation.get('doi') not in ('', 'NR', None) and doi and normalize_doi(citation.get('doi')) != doi:
             match['warnings'].append('Original cited DOI differs from reviewer verified URL; preserve citation error for protocol')
         # Do not turn free-form names such as "NEJM, 2019" into title searches.
@@ -788,6 +874,16 @@ class Bibliography:
         province and institution names are NOT reliable country evidence.
         """
         value = ' '.join(str(text or '').split()).strip(' .;')
+        # PubMed author-specific affiliation strings sometimes put a
+        # corresponding-author contact email *after* the explicit country,
+        # e.g. "... Barranquilla, Colombia. author@example.org".
+        # Strip only a trailing syntactically recognizable email, never
+        # trailing organization names or inferred institutional geography.
+        value = re.sub(
+            r'(?:[\s,;.]*'
+            r'(?:e-?mail\s*:\s*)?'
+            r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})+'
+            r'[\s,;.]*$', '', value, flags=re.I).strip(' .;')
         if not value:
             return 'NR', 'NR', 'NR'
         # Institutional addresses conventionally finish with a country. Use

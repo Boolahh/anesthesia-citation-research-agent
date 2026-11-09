@@ -41,6 +41,7 @@ class TestDownloadPersistence(TestCase):
             (reports / 'geography_review.csv').write_text('tool,question,review_priority\nCGP,Q01,High\n')
             (reports / 'source_quality_review.csv').write_text('tool,question,review_priority\nCGP,Q01,High\n')
             (reports / 'source_level_research.csv').write_text('tool,question,citation_occurrences\nCGP,Q01,1\n')
+            (reports / 'source_alias_review.csv').write_text('tool,question,proposed_title\n')
             (reports / 'run_report.json').write_text(json.dumps({
                 'citations_extracted': 1,
                 'sources_researched': 0,
@@ -75,15 +76,15 @@ class TestDownloadPersistence(TestCase):
                  patch('subprocess.Popen', side_effect=FakePopen), \
                  patch.object(Path, 'read_bytes', read_bytes):
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 9)
+                self.assertEqual(st.download_button.call_count, 10)
                 self.assertEqual(len(ran), 1)
                 self.assertEqual(st.session_state['latest_result']['workbook'], b'filled-xlsx-for-testing')
                 # A click on a download button reruns the Streamlit app,
                 # but does not resubmit the form or delete its saved output.
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 18)
+                self.assertEqual(st.download_button.call_count, 20)
                 self.assertEqual(len(ran), 1)
-                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-9:]]
-                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv', 'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv'])
+                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-10:]]
+                self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv', 'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv', 'source_alias_review.csv'])
         finally:
             sys.path.remove(str(ROOT))

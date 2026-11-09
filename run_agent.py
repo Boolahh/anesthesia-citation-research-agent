@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 
 try:
     from dotenv import load_dotenv
@@ -31,7 +32,7 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.2.0'
+APP_VERSION = '2.2.1'
 
 
 def write_json(path, payload):
@@ -366,6 +367,52 @@ def _source_research_summary(rows, research):
     return result
 
 
+SOURCE_ALIAS_FIELDS = [
+    'tool', 'question', 'proposed_title', 'distinct_linked_source_identities',
+    'citation_occurrences', 'citation_orders', 'source_identities',
+    'original_urls', 'review_action',
+]
+
+
+def _source_alias_review(rows, proposals):
+    """Flag different linked identities with the same proposed source title.
+
+    Do NOT merge citations or decide that translations/mirrors are equivalent.
+    A title match is only a candidate grouping for manual source verification.
+    """
+    by_key = {(p['tool'], p['question'], int(p['order'])): p for p in proposals}
+    grouped = defaultdict(list)
+    for item in rows:
+        key = (item['tool'], item['question'], int(item['order']))
+        proposal = by_key.get(key) or {}
+        title = str((proposal.get('fields') or {}).get('Z') or '').strip()
+        if title in ('', 'NR', 'NOT FOUND') or len(title) < 25:
+            continue
+        title_key = re.sub(r'\s+', ' ', title).casefold().strip(' .')
+        grouped[(item['tool'], item['question'], title_key)].append((item, title))
+    result = []
+    for (tool, question, _), candidates in grouped.items():
+        identities = sorted({citation_identity(item) for item, _ in candidates})
+        if len(identities) < 2:
+            continue
+        urls = sorted({str(item.get('url') or '') for item, _ in candidates
+                       if item.get('url') not in ('', 'NR', None)})
+        result.append({
+            'tool': tool, 'question': question,
+            'proposed_title': candidates[0][1],
+            'distinct_linked_source_identities': len(identities),
+            'citation_occurrences': len(candidates),
+            'citation_orders': ', '.join(str(item['order']) for item, _ in candidates),
+            'source_identities': ' | '.join(identities),
+            'original_urls': ' | '.join(urls),
+            'review_action': ('Same proposed title across distinct citation links; '
+                              'review translations, mirrors, versions, and identifiers. '
+                              'Keep all as-cited occurrences unchanged.'),
+        })
+    return sorted(result, key=lambda x: (
+        -x['citation_occurrences'], x['tool'], x['question']))
+
+
 SOURCE_QUALITY_FIELDS = [
     'tool','question','citation_order','source_file','pdf_page',
     'original_citation','original_url','source_identity','source_context',
@@ -445,9 +492,11 @@ def _geography_review(rows, proposals, workbook):
         has_country = country not in ('', 'NR', 'NOT FOUND', None)
         if not has_country and author in ('NR', 'NOT FOUND', '') and source_type in (
                 'Professional society or organization webpage',
-                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)'):
+                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                'Government or public-health agency document'):
             priority = 'Applicability review'
-            action = 'Determine whether a named first author and author geography apply to this source'
+            action = ('Confirm whether an individual first author and country are '
+                      'applicable to this source before including it in geographic outcomes')
         elif not has_country:
             priority = 'High - primary outcome missing'
             action = 'Locate the actual first-author affiliation, confirm country and WHO region'
@@ -509,6 +558,8 @@ def _research_audit(rows, proposals):
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
+            elif (proposed.get('match') or {}).get('status') == 'non_source_search_results':
+                status = 'search_results_link_not_single_publication'
             elif not proposed.get('has_metadata'):
                 status = 'metadata_unavailable'
             elif not proposed.get('can_autowrite', False):
@@ -606,6 +657,7 @@ def main(argv=None):
     ap.add_argument('--inspect-linked-pdfs', action='store_true',
                     help='Opt-in bounded public source-PDF metadata lookup (slower; review required)')
     args = ap.parse_args(argv)
+    run_started = time.monotonic()
     if args.max_sources < 0 or args.max_docs < 0:
         ap.error('max-sources/max-docs must be nonnegative')
     report_dir = Path(args.report_dir)
@@ -617,6 +669,7 @@ def main(argv=None):
     else:
         # Research-only resumes from an edited/reviewed workbook, with no PDFs.
         rows, documents, warnings = _original_rows(wb), [], []
+    extraction_seconds = round(time.monotonic() - run_started, 2)
     write_json(report_dir/'citations_extracted.json', rows)
     write_csv(report_dir/'citation_preview.csv', rows,
         ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
@@ -625,7 +678,9 @@ def main(argv=None):
     source_review = _source_quality_review(rows)
     write_csv(report_dir/'source_quality_review.csv', source_review, SOURCE_QUALITY_FIELDS)
     if args.command == 'scan':
-        write_json(report_dir/'scan_report.json', {'documents': documents, 'citations': len(rows), 'warnings': warnings})
+        write_json(report_dir/'scan_report.json', {
+            'documents': documents, 'citations': len(rows), 'warnings': warnings,
+            'elapsed_seconds': round(time.monotonic() - run_started, 2)})
         queue = _review_rows(rows, [], warnings)
         write_csv(report_dir/'review_queue.csv', queue,
             ['tool','question','citation_order','source_file','pdf_page','original_citation','original_url','priority','reason'])
@@ -652,6 +707,7 @@ def main(argv=None):
                                  'warning': 'Zero citations extracted; manually confirm the conversation'})
     research = []
     researchable_count = 0
+    research_started = time.monotonic()
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline,
@@ -706,6 +762,7 @@ def main(argv=None):
                   f'{"ERROR" if record.get("error") else "OK"}', flush=True)
             # Crash-recovery checkpoint: proposals are *not* accepted/verified by this.
             write_json(report_dir/'research_proposals.json', research)
+    research_seconds = round(time.monotonic() - research_started, 2) if args.stage in ('research', 'all') else 0.0
     if not research:
         # Avoid leaving a previous run's unrelated proposals in reused folders.
         write_json(report_dir/'research_proposals.json', [])
@@ -714,6 +771,8 @@ def main(argv=None):
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     source_level = _source_research_summary(rows, research)
     write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
+    alias_review = _source_alias_review(rows, research)
+    write_csv(report_dir/'source_alias_review.csv', alias_review, SOURCE_ALIAS_FIELDS)
     geography = _geography_review(rows, research, wb)
     write_csv(report_dir/'geography_review.csv', geography, GEOGRAPHY_REVIEW_FIELDS)
     queue = _review_rows(rows, research, warnings)
@@ -734,6 +793,9 @@ def main(argv=None):
     )
     report = {
         'version': APP_VERSION, 'created_utc': datetime.now(timezone.utc).isoformat(),
+        'elapsed_seconds': round(time.monotonic() - run_started, 2),
+        'extraction_seconds': extraction_seconds,
+        'research_seconds': research_seconds,
         'input_documents': documents, 'citations_extracted': len(rows),
         'documents_with_no_citations': sum(doc.get('citations') == 0 for doc in documents),
         'documents_with_unresolved_question': sum(not doc.get('question') for doc in documents),
@@ -745,6 +807,9 @@ def main(argv=None):
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
         'distinct_sources_high_priority': sum(p['review_priority']=='High' for p in source_level),
+        'possible_source_alias_groups': len(alias_review),
+        'possible_source_alias_occurrences': sum(
+            p['citation_occurrences'] for p in alias_review),
         'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
         'explicit_bibliography_occurrences': sum(
             item.get('source_context') == 'bibliography' for item in rows),
@@ -784,6 +849,15 @@ def main(argv=None):
             for rownum in wb.existing.values()),
         'review_queue_items': len(queue),
         'sources_with_identity_conflicts': sum(x['research_status'] == 'identity_conflict_or_ambiguous_source' for x in audit),
+        'search_results_links_requiring_review': sum(
+            x['research_status'] == 'search_results_link_not_single_publication' for x in audit),
+        'provisional_webpage_title_occurrences': sum(
+            (p.get('field_provenance') or {}).get('Z', {}).get('source') ==
+            'Original linked webpage title (unverified)' for p in research),
+        'journal_article_first_author_countries': sum(
+            wb.get_row(rownum).get('AD') == 'Journal article' and
+            wb.get_row(rownum).get('AN') not in ('', 'NR', 'NOT FOUND', None)
+            for rownum in wb.existing.values()),
         'informative_green_cells_proposed': sum(x['informative_green_fields'] for x in audit),
         'green_cells_policy': args.green_policy, 'stages': args.stage,
         'investigator_journal_evidence_used': bool(args.journal_evidence),
