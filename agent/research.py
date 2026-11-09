@@ -969,7 +969,13 @@ class Bibliography:
         if page_title and not official_title:
             review_flags.append('Title obtained from linked webpage; confirm identity and source type manually')
         if pdf_title and not (official_title or page_title):
-            review_flags.append('Title obtained from PDF metadata and first-page text; verify full source and identity manually')
+            basis = str(public_pdf.get('title_basis') or '')
+            review_flags.append('Provisional title obtained from linked PDF: ' + basis +
+                                '; verify source identity, version, authorship and citation correctness')
+            if '/draft-guidelines/' in (urlparse(evidence.get('source_url', '')).path or '').lower():
+                review_flags.append(
+                    'Original AI hyperlink points to a draft guideline PDF. '
+                    'Do not treat it as the final peer-reviewed guideline without comparing editions.')
 
         if pm.get('year'):
             put('AA', pm['year'], 'PubMed', pm_url, pm.get('year_basis', ''))
@@ -977,6 +983,10 @@ class Bibliography:
             put('AA', oa['publication_year'], 'OpenAlex', oa_url, 'publication year')
         elif ep.get('pubYear'):
             put('AA', ep['pubYear'], 'Europe PMC', 'https://europepmc.org/article/MED/'+str(evidence.get('pmid') or ''))
+        elif (public_pdf.get('document_kind') == 'edited_book_compilation'
+              and re.fullmatch(r'20\\d{2}', str(public_pdf.get('publication_year') or ''))):
+            put('AA', public_pdf['publication_year'], 'ANZCA source PDF frontmatter (unverified)',
+                evidence.get('source_url', ''), 'edition year printed in publisher-hosted PDF')
         else:
             date = (cr.get('published-print') or cr.get('published') or cr.get('published-online') or {})
             y = ((date.get('date-parts') or [[]])[0] or [''])[0]
@@ -1004,6 +1014,13 @@ class Bibliography:
             put('AD', 'Preprint', 'Crossref', cr_url)
         elif ctype in ('proceedings-article', 'proceedings'):
             put('AD', 'Conference abstract or proceedings', 'Crossref', cr_url)
+        elif public_pdf.get('document_kind') == 'edited_book_compilation':
+            put('AD', 'Textbook or book chapter',
+                'publisher-hosted edited collection (unverified)', evidence.get('source_url', ''),
+                'entire edited volume, not an individually authored chapter')
+            review_flags.append(
+                'PDF contains an edited book; do not assign editor country as article first-author country '
+                'or assume every chapter is independently cited')
         elif 'ncbi.nlm.nih.gov/books/' in evidence.get('source_url', ''):
             put('AD', 'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)', 'source URL', evidence.get('source_url', ''))
         elif page and first:
