@@ -509,11 +509,14 @@ def _geography_review(rows, proposals, workbook):
         country = data.get('AN') or 'NR'
         author = data.get('AL') or 'NR'
         source_type = data.get('AD') or 'NR'
+        pdf_kind = (proposal.get('source_document') or {}).get('document_kind')
         has_country = country not in ('', 'NR', 'NOT FOUND', None)
-        if not has_country and author in ('NR', 'NOT FOUND', '') and source_type in (
-                'Professional society or organization webpage',
-                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
-                'Government or public-health agency document'):
+        if not has_country and author in ('NR', 'NOT FOUND', '') and (
+                source_type in (
+                    'Professional society or organization webpage',
+                    'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                    'Government or public-health agency document')
+                or pdf_kind == 'edited_book_compilation'):
             priority = 'Applicability review'
             action = ('Confirm whether an individual first author and country are '
                       'applicable to this source before including it in geographic outcomes')
