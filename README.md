@@ -45,6 +45,25 @@ Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environmen
 
 The system reads PubMed XML **author by author** and rejects repeated composite paragraphs that actually list multiple authors' institutions. It refuses to assign an institution to an author just because another author lists it, and refuses to pick the "most recent" institution from several affiliations when chronology is unknown. OpenAlex affiliations are retained as possible research clues but **are not automatically used** for the first, last or corresponding author's recorded institution or country. Journal country is not substituted with publisher headquarters. Explicit countries must appear at the end of an affiliation, not only inside a university name; ambiguous country names are withheld. The official issue year is preferred over online-first year when PubMed supplies both, with this choice documented in provenance.
 
+### Source research performance and PDF coverage (v2.2)
+
+The research engine reuses independent bibliographic evidence for repeat citations
+with the **same original source identity and as-cited details**. The export still
+retains each separate citation occurrence and its own Excel row. A distinct
+`source_memo_reuses` count appears in `run_report.json`. Source memoization
+is not verification, and ambiguous references still go into the review queue.
+
+Streamlit now shows live extraction/research progress rather than only an
+unchanging spinner. Binary PDFs are not passed through the HTML scraper.
+**Inspect linked source PDFs** is an optional, slower, bounded metadata-only
+lookup for public PDF documents. Neither webpage titles nor PDF document
+titles are verified bibliographic identities.
+
+Some other platforms with strongly identifiable numbered-link PDF geometry
+can use a conservative parser fallback; they are explicitly marked unvalidated.
+ChatGPT and Claude use their existing extraction paths. For details and pilot
+QA instructions, see [research performance and format guide](docs/RESEARCH_PERFORMANCE_AND_FORMATS.md).
+
 ### Unavailable or licensed research fields
 
 Without verified SCImago data, journal origin is `NOT FOUND`; 2026 Journal Citation Reports impact factor (BE) is blank without a licensed verified value. Missing/restricted publications, ambiguous author roles, explicit funding statements and corresponding authors often require a reviewer or full-text access. An AI API is not a substitute for those records. Publication counts reflect time-of-lookup OpenAlex data and may change; metadata is provisional.
