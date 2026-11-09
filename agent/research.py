@@ -235,6 +235,8 @@ def valid_public_page_title(value):
     title = unescape(re.sub(r'\s+', ' ', str(value or ''))).strip(' -|.:')
     if not 18 <= len(title) <= 240 or len(re.findall(r'[A-Za-z]{3,}', title)) < 3:
         return ''
+    if re.search(r'(?:^search results?\b|[-|:]\s*search results?\s*(?:[-|:]|$))', title, re.I):
+        return ''
     if re.search(r'^(?:403|404|500|503)\b|\b(?:access denied|not found|page not found|'
                  r'log[ -]?in|sign[ -]?in|captcha|robot check|just a moment|'
                  r'enable javascript|request blocked|website unavailable|'
