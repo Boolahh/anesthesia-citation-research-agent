@@ -124,9 +124,38 @@ def source_access_review(rows, proposals):
         elif (path.endswith('.pdf') or '/surrogate' in path or
               '/getcontentasset/' in path or '/dl-' in path):
             category = 'downloadable_document_or_pdf'
-            action = ('Run targeted Inspect linked source PDFs with this original URL; '
-                      'confirm document title, version, publisher and authors manually. '
-                      'Do not assume that a large collection is one journal article')
+            status_set = {doc.get('status') for doc in doc_info}
+            hints = _unique(doc.get('title_hint') for doc in doc_info)
+            if 'read' in status_set and hints:
+                action = (
+                    'Original linked PDF was successfully read. Verify its visible '
+                    f'first-page heading ({hints[:120]}) against the exact document '
+                    'version, issuing body and author; do not re-download without '
+                    'new evidence. The heading is not an independently verified citation.')
+            elif 'read' in status_set:
+                action = (
+                    'Original PDF was already read, but no reliable work-level title '
+                    'was established. Review cover/front matter or the publisher record '
+                    'manually, especially for multi-chapter books. Re-running the same '
+                    'PDF inspection alone is unlikely to fix this.')
+            elif 'time_budget_exceeded' in status_set:
+                action = (
+                    'PDF download exceeded the processing budget. Find an official '
+                    'publisher or registry metadata page, or inspect a locally '
+                    'downloaded authorized copy; do not loop automatic retries.')
+            elif 'too_large' in status_set:
+                action = (
+                    'PDF exceeded the bounded download size. Search the official '
+                    'publisher record/abstract or inspect an authorized local copy.')
+            elif 'blocked_url' in status_set or 'network_error' in status_set:
+                action = (
+                    'Source PDF could not be safely accessed. Confirm original URL '
+                    'and seek an official publisher metadata record; review manually.')
+            else:
+                action = (
+                    'Target this original URL with Inspect linked source PDFs, '
+                    'then verify title, version, publisher and author manually. '
+                    'A compilation is not necessarily a journal article.')
             priority = 'High'
         else:
             category = 'webpage_or_index_record'

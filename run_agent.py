@@ -34,7 +34,7 @@ from agent.source_coverage import (geography_candidate_sources, source_access_re
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.3.0'
+APP_VERSION = '2.3.1'
 
 
 def write_json(path, payload):
@@ -420,7 +420,8 @@ SOURCE_QUALITY_FIELDS = [
     'tool','question','citation_order','source_file','pdf_page',
     'original_citation','original_url','source_identity','source_context',
     'occurrences_of_source_in_question','short_or_generic_label',
-    'extraction_confidence','repeat_occurrence','review_priority','review_reason',
+    'expected_numbered_citation_marker', 'extraction_confidence',
+    'repeat_occurrence','review_priority','review_reason',
 ]
 
 
@@ -432,8 +433,19 @@ def _source_quality_review(rows):
     for item in rows:
         ident = citation_identity(item)
         num = identity_counts[(item['tool'], item['question'], ident)]
-        weak = weak_visible_citation_label(item.get('citation', ''), item.get('url', ''))
+        expected_numbered = bool(
+            item.get('extraction_method') == 'deepseek_numbered_link'
+            and re.fullmatch(r'\d{1,3}', str(item.get('citation') or '')))
+        # DeepSeek and other numbered-link exports intentionally show a
+        # superscript number rather than an inline article title. This is
+        # not a defective PDF extraction; matching the linked publication
+        # remains an independent, human-verification task.
+        weak = (not expected_numbered
+                and weak_visible_citation_label(item.get('citation', ''), item.get('url', '')))
         notes = []
+        if expected_numbered:
+            notes.append('Original export uses numbered link marker, not a full bibliographic title; '
+                         'verify linked source identity separately')
         if weak:
             notes.append('Short/domain-only linked label is not a full bibliographic citation')
         if num > 1:
@@ -450,9 +462,14 @@ def _source_quality_review(rows):
             'source_context': item.get('source_context','unclassified'),
             'occurrences_of_source_in_question': num,
             'short_or_generic_label': 'Y' if weak else 'N',
+            'expected_numbered_citation_marker': 'Y' if expected_numbered else 'N',
             'extraction_confidence': item.get('extraction_confidence',''),
             'repeat_occurrence': item.get('repeat',''),
-            'review_priority': ('High' if weak and num>=3 else 'Review' if notes else 'Low'),
+            'review_priority': (
+                'High' if (weak and num >= 3) or
+                item.get('extraction_confidence') in ('review', 'low') or
+                item.get('url') in ('', 'NR', None)
+                else 'Review' if notes else 'Low'),
             'review_reason': '; '.join(notes),
         })
     return output
@@ -492,11 +509,14 @@ def _geography_review(rows, proposals, workbook):
         country = data.get('AN') or 'NR'
         author = data.get('AL') or 'NR'
         source_type = data.get('AD') or 'NR'
+        pdf_kind = (proposal.get('source_document') or {}).get('document_kind')
         has_country = country not in ('', 'NR', 'NOT FOUND', None)
-        if not has_country and author in ('NR', 'NOT FOUND', '') and source_type in (
-                'Professional society or organization webpage',
-                'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
-                'Government or public-health agency document'):
+        if not has_country and author in ('NR', 'NOT FOUND', '') and (
+                source_type in (
+                    'Professional society or organization webpage',
+                    'Point-of-care resource topic (e.g. UpToDate, DynaMed, StatPearls)',
+                    'Government or public-health agency document')
+                or pdf_kind == 'edited_book_compilation'):
             priority = 'Applicability review'
             action = ('Confirm whether an individual first author and country are '
                       'applicable to this source before including it in geographic outcomes')
@@ -543,7 +563,8 @@ RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
     'informative_green_fields','metadata_sources','source_document_status',
-    'source_document_title_hint','review_reasons',
+    'source_document_title_hint','source_document_kind','source_document_version',
+    'review_reasons',
 ]
 
 
@@ -597,6 +618,8 @@ def _research_audit(rows, proposals):
             'metadata_sources':'; '.join(sources),
             'source_document_status':((proposed or {}).get('source_document') or {}).get('status',''),
             'source_document_title_hint':((proposed or {}).get('source_document') or {}).get('title_hint',''),
+            'source_document_kind':((proposed or {}).get('source_document') or {}).get('document_kind',''),
+            'source_document_version':((proposed or {}).get('source_document') or {}).get('document_version',''),
             'review_reasons':'; '.join(str(x) for x in reasons[:12]),
         })
     return result
@@ -841,6 +864,9 @@ def main(argv=None):
             item.get('source_context') == 'inline_link' for item in rows),
         'short_or_generic_source_labels': sum(
             item['short_or_generic_label'] == 'Y' for item in source_review),
+        'expected_numbered_citation_markers': sum(
+            item['expected_numbered_citation_marker'] == 'Y'
+            for item in source_review),
         'high_priority_source_quality_rows': sum(
             item['review_priority'] == 'High' for item in source_review),
         'sources_researched': len(research),  # candidates evaluated; may run fully offline
@@ -878,6 +904,15 @@ def main(argv=None):
         'provisional_webpage_title_occurrences': sum(
             (p.get('field_provenance') or {}).get('Z', {}).get('source') ==
             'Original linked webpage title (unverified)' for p in research),
+        'provisional_pdf_title_occurrences': sum(
+            (p.get('field_provenance') or {}).get('Z', {}).get('source') ==
+            'Original linked PDF title proposal (unverified)' for p in research),
+        'public_source_pdf_read_occurrences': sum(
+            (p.get('source_document') or {}).get('status') == 'read'
+            for p in research),
+        'public_source_pdf_timeout_occurrences': sum(
+            (p.get('source_document') or {}).get('status') ==
+            'time_budget_exceeded' for p in research),
         'journal_article_first_author_countries': sum(
             wb.get_row(rownum).get('AD') == 'Journal article' and
             wb.get_row(rownum).get('AN') not in ('', 'NR', 'NOT FOUND', None)

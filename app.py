@@ -331,11 +331,27 @@ if result:
             f"These are not independently verified publication counts."
         )
     if report.get('unresolved_downloadable_source_identities', 0):
-        st.warning(
-            f"Research gap: {report['unresolved_downloadable_source_identities']} "
-            f"distinct source link(s) appear to be PDFs or downloadable institutional documents. "
-            f"Review source_access_review.csv; a targeted run with Inspect linked source PDFs "
-            f"can recover bounded document evidence but may take longer."
+        if report.get('inspect_linked_pdfs'):
+            st.warning(
+                f"After PDF inspection, {report['unresolved_downloadable_source_identities']} "
+                f"downloadable source identity/identities still have no green data. "
+                f"Read source_access_review.csv for what happened (read without title, "
+                f"timeout or blocked download). Repeating the same inspection is not "
+                f"necessarily useful."
+            )
+        else:
+            st.warning(
+                f"Research gap: {report['unresolved_downloadable_source_identities']} "
+                f"distinct linked sources appear to be PDFs or institutional downloads. "
+                f"Consider a targeted, opt-in Inspect linked source PDFs run, then "
+                f"verify titles and document versions manually."
+            )
+    if report.get('expected_numbered_citation_markers', 0):
+        st.info(
+            f"Numbered citation format: {report['expected_numbered_citation_markers']} "
+            f"visible superscript link markers are expected for this PDF export. "
+            f"They are not malformed citations merely because they contain only "
+            f"numbers. Each linked source still requires independent verification."
         )
     if report.get('short_or_generic_source_labels'):
         st.warning(
@@ -357,6 +373,19 @@ if result:
             f"Only {report['sources_researched']} of {report['eligible_sources_for_research']} "
             f"eligible citations were attempted. Set Maximum publication research lookups to **0** "
             f"and rerun to research all eligible citations."
+        )
+    if report.get('provisional_pdf_title_occurrences', 0):
+        st.caption(
+            f"PDF-derived title proposals: {report['provisional_pdf_title_occurrences']} "
+            f"citation occurrences; these are not verified article identities and "
+            f"may represent institutional protocols or edited books."
+        )
+    if report.get('public_source_pdf_timeout_occurrences', 0):
+        st.warning(
+            f"Linked PDF inspection hit a processing time limit for "
+            f"{report['public_source_pdf_timeout_occurrences']} citation occurrences "
+            f"(the same source can be cited repeatedly). Check the source-access "
+            f"review for alternate official metadata links rather than looping retries."
         )
     if report.get('sources_researched'):
         st.caption(
