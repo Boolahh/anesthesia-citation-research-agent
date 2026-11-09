@@ -216,7 +216,7 @@ class PublicSourcePDFTests(TestCase):
                                 for text in result['review_flags']))
             self.assertEqual(
                 result['field_provenance']['Z']['source'],
-                'Original linked PDF metadata title (unverified)')
+                'Original linked PDF title proposal (unverified)')
 
     def test_pdf_inspection_off_by_default(self):
         with TemporaryDirectory() as tmp:
