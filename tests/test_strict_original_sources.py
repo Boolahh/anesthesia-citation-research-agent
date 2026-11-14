@@ -12,6 +12,8 @@ from agent.strict_sources import (
     reliable_original_identity, strict_green_values, MISSING,
 )
 from agent.workbook import TemplateWorkbook, GREEN_COLS
+from agent.pdf_extract import parse_pdf
+import fitz
 from run_agent import enrich, research_candidate
 
 TEMPLATE = (Path(__file__).resolve().parents[1] / 'template' /
@@ -222,3 +224,42 @@ class StrictWorkbookRetentionTests(TestCase):
         wb.mark_unretrievable(rn)
         self.assertEqual(wb.get_row(rn)['Z'],'Previously reviewed source title')
         self.assertEqual(wb.get_row(rn)['U'],'Real - correct')
+
+
+class StrictPDFSourceExtractionTests(TestCase):
+    def test_literal_pdf_link_is_preserved_and_short_badge_is_not_article_title(self):
+        with TemporaryDirectory() as tmp:
+            pdf=Path(tmp)/'Q01_clinical_export.pdf'
+            with fitz.open() as document:
+                page=document.new_page()
+                page.insert_text((60,90),'nysora',fontsize=12)
+                page.insert_link({
+                    'kind':fitz.LINK_URI, 'from':fitz.Rect(58,76,111,95),
+                    'uri':'https://nysora.com/article-as-cited/',
+                })
+                document.save(pdf)
+            citations, warnings=parse_pdf(pdf,'CGP',{'Q01':'Prevent PONV'})
+            self.assertEqual(len(citations),1)
+            self.assertEqual(citations[0]['url'],'https://nysora.com/article-as-cited/')
+            self.assertEqual(citations[0]['citation'].casefold(),'nysora')
+            self.assertEqual(citations[0]['title'],'NR')
+            self.assertEqual(citations[0]['tool'],'CGP')
+            self.assertEqual(citations[0]['question'],'Q01')
+
+    def test_guideline_name_in_uncited_clinical_prose_cannot_create_fake_source(self):
+        with TemporaryDirectory() as tmp:
+            pdf=Path(tmp)/'Q02_guidance.pdf'
+            with fitz.open() as doc:
+                page=doc.new_page()
+                page.insert_text(
+                    (45,90),
+                    'The principal recommendations from recent guidelines are',
+                    fontsize=11)
+                page.insert_text((45,115),
+                                 '2024 POQI consensus and 2023 ACC/AHA guidance',
+                                 fontsize=11)
+                doc.save(pdf)
+            citations,warnings=parse_pdf(pdf,'CGP',{'Q02':'Hypotension prevention'})
+            self.assertEqual(citations,[])
+            self.assertTrue(any('No explicit citations recoverable' in x
+                                for x in warnings))
