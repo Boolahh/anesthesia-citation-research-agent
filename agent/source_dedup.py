@@ -13,7 +13,13 @@ from .pdf_extract import citation_identity, DOI_RE
 
 def source_key(item):
     """Conservative source identity for deduplication and older XLSX rows."""
-    key = citation_identity(item)
+    # The same as-cited hyperlink can accompany a short in-text badge AND
+    # a longer bibliography entry containing a DOI. Treat that as one linked
+    # source. The URL is the common original evidence; publication identity
+    # conflicts are left to the reviewer, never silently adjudicated.
+    url = str(item.get('url') or '')
+    key = (citation_identity({'url': url, 'citation': ''})
+           if url not in ('', 'NR', 'NOT FOUND') else citation_identity(item))
     if key.startswith('text:'):
         # Prefer an explicitly as-cited identifier if no linked URL was
         # retained by the PDF. Never substitute researched green metadata.
