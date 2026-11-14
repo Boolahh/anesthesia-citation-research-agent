@@ -34,9 +34,10 @@ from agent.source_coverage import (geography_candidate_sources, source_access_re
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
 from agent.source_dedup import unique_question_sources, source_key
+from agent.strict_sources import reliable_original_identity, strict_green_values
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.4.0'
+APP_VERSION = '2.4.1'
 
 
 def write_json(path, payload):
@@ -230,32 +231,16 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
             f'As-cited year {blue_year} differs from journal issue year {issue_year}; '
             f'{context}. Reviewer must determine whether this is an actual citation error.'
         )
-    if ai and any(evidence.get(k) for k in ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')):
-        source_context = {k: evidence.get(k) for k in ('doi', 'pmid', 'crossref', 'openalex', 'pubmed', 'europepmc', 'public_page')}
-        guidelines = '\n'.join(workbook.data.prompts.get(n, '') for n in range(44, 88))
-        try:
-            coded = ai.code_source(citation, source_context,
-                {name: workbook.data.categories.get(code, []) for code, name in [
-                    ('F', 'Type of source'), ('G', 'Author type'), ('H', 'Study design'),
-                    ('I', 'Open access'), ('J', 'Funding'), ('N', 'Subspecialty')]}, guidelines)
-            if len(coded) != len(GREEN_COLS):
-                raise ValueError('AI returned an incorrect number of research fields')
-            # AI may propose missing columns, but must not override sourced facts;
-            # author affiliations and corresponding-author details need primary evidence.
-            restricted = {'AL','AM','AN','AO','AP','AQ','AR','AS','AT','AU','AV','AW','AX','AY','AZ','BB','BC','BD','BE'}
-            for col, value in zip(GREEN_COLS, coded):
-                if col in restricted or value in ('', 'NR', 'NOT FOUND', None):
-                    continue
-                if proposed[col] in ('NR', 'NOT FOUND', ''):
-                    proposed[col] = value
-                    evidence.setdefault('field_provenance', {})[col] = {
-                        'source': 'AI proposal from retrieved evidence', 'url': '',
-                        'reason': 'Requires independent reviewer verification'}
-        except Exception as exc:
-            warnings.append('Optional AI coding failed: '+str(exc)[:160])
+    # Strict mode: do not allow optional language models to invent green
+    # publication values. Only independently retrieved source facts qualify.
     proposed = refine_green(proposed, workbook)
-    if journal_evidence:
+    matched, identity_reason = reliable_original_identity(citation, evidence)
+    if journal_evidence and matched:
         proposed = supplement_journal_fields(proposed, evidence, journal_evidence, workbook.data.countries)
+    proposed = strict_green_values(proposed, evidence.get('field_provenance') or {}, matched)
+    if not matched:
+        warnings.append('Source not independently retrievable or identifiable: ' + identity_reason +
+                        '; retained original citation and URL; research columns marked NOT FOUND')
     has_metadata = (any(evidence.get(k) for k in
                         ('crossref', 'openalex', 'pubmed', 'europepmc', 'public_page'))
                     or bool((evidence.get('public_pdf') or {}).get('title')))
@@ -264,8 +249,10 @@ def enrich(citation, workbook, bibliography, ai, journal_evidence=None):
     critical = any('conflicts with' in msg or 'differs materially' in msg for msg in warnings)
     return {
         'fields': proposed, 'has_metadata': has_metadata,
+        'strict_source_identified': matched,
+        'strict_identity_reason': identity_reason,
         'informative_fields': informative_fields,
-        'can_autowrite': has_metadata and informative_fields > 0 and not critical,
+        'can_autowrite': matched and informative_fields > 0 and not critical,
         'record_url': evidence.get('source_url', ''),
         'match': match, 'review_flags': warnings,
         'field_provenance': evidence.get('field_provenance', {}),
@@ -567,7 +554,7 @@ def _geography_review(rows, proposals, workbook):
 RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
-    'informative_green_fields','metadata_sources','source_document_status',
+    'informative_green_fields','metadata_sources','strict_identity_reason','source_document_status',
     'source_document_title_hint','source_document_kind','source_document_version',
     'review_reasons',
 ]
@@ -585,11 +572,17 @@ def _research_audit(rows, proposals):
         key = (citation['tool'], citation['question'], int(citation['order']))
         proposed = proposals_by_key.get(key)
         status = 'not_researched'
+        if not proposed and citation.get('url') in ('', 'NR', 'NOT FOUND', None) and (
+                citation.get('doi') in ('', 'NR', 'NOT FOUND', None)
+                and citation.get('pmid') in ('', 'NR', 'NOT FOUND', None)):
+            status = 'no_original_source_locator'
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
             elif (proposed.get('match') or {}).get('status') == 'non_source_search_results':
                 status = 'search_results_link_not_single_publication'
+            elif proposed.get('strict_source_identified') is False:
+                status = 'source_identity_not_retrievable'
             elif not proposed.get('has_metadata'):
                 status = 'metadata_unavailable'
             elif not proposed.get('can_autowrite', False):
@@ -608,6 +601,9 @@ def _research_audit(rows, proposals):
         sources = sorted({v.get('source', '') for v in (proposed.get('field_provenance') or {}).values()
                           if isinstance(v, dict) and v.get('source')}) if proposed else []
         reasons = proposed.get('review_flags') or [] if proposed else []
+        if status == 'no_original_source_locator':
+            reasons = ['No link or DOI/PMID shown in original PDF; citation text retained in blue, '
+                       'research metadata NOT FOUND pending manual identification']
         if proposed and proposed.get('error'):
             reasons = list(reasons) + [str(proposed['error'])[:250]]
         result.append({
@@ -621,6 +617,7 @@ def _research_audit(rows, proposals):
             'research_pmid':(proposed or {}).get('identifiers',{}).get('pmid',''),
             'informative_green_fields':meaningful,
             'metadata_sources':'; '.join(sources),
+            'strict_identity_reason':(proposed or {}).get('strict_identity_reason',''),
             'source_document_status':((proposed or {}).get('source_document') or {}).get('status',''),
             'source_document_title_hint':((proposed or {}).get('source_document') or {}).get('title_hint',''),
             'source_document_kind':((proposed or {}).get('source_document') or {}).get('document_kind',''),
@@ -664,12 +661,12 @@ def research_candidate(item, wb):
         source = {**item, 'url': reviewed, 'source_url_verified': True}
     else:
         source = item
-    has_identifier = any(source.get(k) not in ('', 'NR', 'NOT FOUND', None)
-                         for k in ('url', 'doi', 'pmid'))
-    title = str(source.get('title') or '')
-    searchable_title = (len(re.findall(r'[A-Za-z]{3,}', title)) >= 7
-                        and 25 <= len(title) <= 240)
-    return rownum, source, (has_identifier or searchable_title)
+    # A similar title is not enough to decide which scholarly publication
+    # the AI actually cited. Preserve long unlinked bibliography entries in
+    # blue, but don't perform speculative title-only internet matching.
+    has_original_locator = any(source.get(k) not in ('', 'NR', 'NOT FOUND', None)
+                               for k in ('url', 'doi', 'pmid'))
+    return rownum, source, has_original_locator
 
 
 def main(argv=None):
@@ -756,7 +753,8 @@ def main(argv=None):
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline,
-                                   inspect_linked_pdfs=args.inspect_linked_pdfs)
+                                   inspect_linked_pdfs=args.inspect_linked_pdfs,
+                                   allow_title_search=False)
         journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
         # Compute eligibility *after* considering column X, so reports can
         # distinguish skipped citations from those left out by the research cap.
@@ -774,28 +772,35 @@ def main(argv=None):
             if rownum is None:
                 continue
             if not eligible:
+                wb.mark_unretrievable(rownum)
                 warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
-                                 'warning': 'No source identifier and insufficient title; research skipped'})
+                                 'warning': 'Original source not retrievable: no specific source identifier or link; '
+                                            'original citation retained, missing green fields marked NOT FOUND'})
                 continue
             attempts += 1
             record = {'tool': key[0], 'question': key[1], 'order': key[2], 'row': rownum}
             try:
                 info = enrich(lookup_item, wb, bibliography, ai, journal_database)
                 record.update(info)
-                written = bool(info['can_autowrite'] and wb.upsert_green(rownum,
-                    [info['fields'][k] for k in GREEN_COLS], args.green_policy))
+                if info['can_autowrite']:
+                    written = bool(wb.upsert_green(rownum,
+                        [info['fields'][k] for k in GREEN_COLS], args.green_policy))
+                else:
+                    written = False
+                wb.mark_unretrievable(rownum)
                 record['written_to_workbook'] = written
                 if not info['has_metadata']:
                     warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
                                      'warning': 'No publication metadata retrieved; manual verification required'})
-                if info['has_metadata'] and not info['can_autowrite']:
-                    identity_problem = any('conflicts with' in msg or 'differs materially' in msg
-                                           for msg in info.get('review_flags', []))
+                if not info['strict_source_identified']:
                     warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
-                                     'warning': ('Publication identity mismatch; green fields withheld pending review'
-                                                 if identity_problem else
-                                                 'Metadata retrieved without informative fields; no green data written')})
+                                     'warning': 'Unverified source identity: '+info['strict_identity_reason']+
+                                                '; green fields not guessed (NOT FOUND)'})
+                elif not info['can_autowrite']:
+                    warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
+                                     'warning': 'Source identified but no safe publication metadata available'})
             except Exception as exc:
+                wb.mark_unretrievable(rownum)
                 record['error'] = f'{type(exc).__name__}: {str(exc)[:250]}'
                 record['written_to_workbook'] = False
                 warnings.append({'tool': key[0], 'question': key[1], 'order': key[2],
@@ -863,6 +868,13 @@ def main(argv=None):
         'distinct_bibliography_sources_within_questions': sum(
             row['bibliography_distinct_sources'] for row in citation_census),
         'citation_counting_method': 'one distinct linked source per model and question in Excel; keep raw appearances in audit exports',
+        'source_identification_policy': 'strict authoritative link-to-record evidence; unresolved green fields NOT FOUND',
+        'speculative_title_search_enabled': False,
+        'sources_passing_strict_identity': sum(p.get('strict_source_identified') is True for p in research),
+        'sources_not_independently_identified': sum(p.get('strict_source_identified') is False for p in research),
+        'sources_skipped_no_original_locator': max(
+            0, len(rows) - researchable_count),
+        'missing_research_placeholder': 'NOT FOUND',
         'citation_counts_by_question_file': str(report_dir/'citation_counts_by_question.csv'),
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),

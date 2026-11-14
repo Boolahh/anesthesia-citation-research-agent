@@ -87,12 +87,13 @@ class ResearchTitleQualityTests(TestCase):
                 {'tool': 'CGP', 'question': 'Q01', 'order': 1,
                  **result, 'written_to_workbook': False}])
             self.assertEqual(report[0]['research_status'],
-                             'metadata_without_informative_fields')
+                             'source_identity_not_retrievable')
 
     def test_online_first_year_difference_flagged_without_invalidating_source(self):
         engine = Mock()
         engine.metadata.return_value = {
-            'pubmed': {'online_year': '2025', 'pmid': '12345678'},
+            'pubmed': {'online_year': '2025', 'pmid': '12345678',
+                       'title':'Synthetic online-first study'},
             'match': {'warnings': []},
             'review_flags': [],
             'lookup_events': [],
@@ -103,7 +104,8 @@ class ResearchTitleQualityTests(TestCase):
             **{c: 'NR' for c in GREEN_COLS}, 'AA': '2026',
             'Z': 'Synthetic online-first study'
         }
-        outcome = enrich({'year': '2025', 'title': 'Synthetic online-first study'},
+        outcome = enrich({'year': '2025', 'title': 'Synthetic online-first study',
+                          'url':'https://pubmed.ncbi.nlm.nih.gov/12345678/'},
                          self.workbook, engine, None)
         self.assertTrue(any('online-first publication year' in f
                             for f in outcome['review_flags']))
@@ -114,7 +116,9 @@ class ResearchTitleQualityTests(TestCase):
     def test_guideline_version_year_difference_requires_review_not_error(self):
         engine = Mock()
         engine.metadata.return_value = {
-            'pubmed': {'online_year': '2025', 'pmid': '12345678'},
+            'pubmed': {'online_year': '2025', 'pmid': '12345678',
+                       'title':'2024 Synthetic practice guidelines'},
+            'pmid':'12345678',
             'match': {'warnings': []},
             'review_flags': [],
             'lookup_events': [],
@@ -123,7 +127,8 @@ class ResearchTitleQualityTests(TestCase):
             **{c: 'NR' for c in GREEN_COLS}, 'AA': '2025',
             'AD': 'Guideline', 'Z': '2024 Synthetic practice guidelines'
         }
-        outcome = enrich({'year': '2024', 'title': '2024 Synthetic practice guidelines'},
+        outcome = enrich({'year': '2024', 'title': '2024 Synthetic practice guidelines',
+                          'url':'https://pubmed.ncbi.nlm.nih.gov/12345678/'},
                          self.workbook, engine, None)
         self.assertTrue(any('guideline-version' in f
                             for f in outcome['review_flags']))

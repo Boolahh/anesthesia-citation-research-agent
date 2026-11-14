@@ -109,6 +109,11 @@ def rough_fields(text, url):
     if j:
         journal = j.group(1)
     title = flatten_text(text[m.end():]).lstrip('.:, ') if author != 'NR' else text
+    # A numeric citation or short linked domain badge is NOT a publication
+    # title, even though it must remain in the original citation column.
+    if (weak_visible_citation_label(text, url) or
+            re.fullmatch(r'(?:\[?\d{1,3}\]?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+)', text.strip())):
+        title = 'NR'
     return {'citation': text or 'NR', 'title': title or 'NR', 'authors': author,
             'year': year.group() if year else 'NR', 'journal': journal,
             'doi': doi, 'pmid': pmid}
@@ -462,8 +467,9 @@ def _parse_pages(pages, tool, question, path, api=None):
             continue
         found.append(ref)
     found.sort(key=lambda x: (x['page'], x['y'], x['x']))
-    if not found:
-        found = fallback_named_sources(pages)
+    # Never manufacture citation rows from a narrative mention of a clinical
+    # organization or guideline. Only explicit source links or bibliography
+    # entries in the original PDF qualify for the workbook.
     text = '\n'.join(p.get_text(sort=True) for p in pages)
     text_n = normalize(text)
     collapsed = re.findall(r'(?<!\w)\+\s*\d{1,3}(?!\w)', text)
@@ -471,25 +477,9 @@ def _parse_pages(pages, tool, question, path, api=None):
         warnings.append(f'Collapsed +N source labels ({len(collapsed)}) found; expand hidden citations before finalizing')
     if not text_n and not found:
         warnings.append('PDF has no selectable text or URI links; OCR/manual export is required')
-    if api:
-        try:
-            proposed = api.extract_citations(text, found, tool, question)
-            allowed_urls = {r.get('url') for r in found if r.get('url')}
-            for item in proposed:
-                citation = flatten_text(item.get('citation', ''))
-                if not citation or len(normalize(citation)) < 20 or normalize(citation) not in text_n:
-                    continue
-                url = item.get('url', '')
-                if url not in allowed_urls:
-                    url = ''
-                candidate = {'page': 0, 'x': 0, 'y': len(found)*1000,
-                             'citation': citation, 'url': url,
-                             'kind': 'ai_transcribed', 'confidence': 'review',
-                             'evidence': {'source': 'exact PDF text'}}
-                if not any(_matches_reference(candidate, a) or normalize(a['citation']) == normalize(citation) for a in found):
-                    found.append(candidate)
-        except Exception as exc:
-            warnings.append('Optional AI extraction failed; deterministic sources kept: '+str(exc)[:150])
+    # Optional AI extraction is not permitted to add citations beyond
+    # the original PDF link/explicit reference evidence. This prevents
+    # paraphrased prose from becoming an invented source row.
     if not found:
         warnings.append('No explicit citations recoverable; confirm original conversation and export format')
     if not any(g.get('url') for g in found):

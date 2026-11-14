@@ -175,6 +175,10 @@ with st.form('agent_form'):
                                    type=['pdf', 'zip'], accept_multiple_files=True,
                                    help='For mixed models, upload a ZIP with folders named CGP, CLG, GEM, OEV, etc. or use descriptive filenames.')
         wb_upload = st.file_uploader('Reviewed Excel workbook (optional for copying, required for research-only)', type=['xlsx'])
+        st.caption('Strict source matching is always enabled. For a clean evidence audit, '
+                   'start with the original blank workbook. Older completed workbooks '
+                   'can include provisional green data from earlier releases; '
+                   'existing substantive values and reviewer decisions are preserved, not erased.')
         journal_upload = st.file_uploader('Optional verified SCImago / licensed 2026 JCR journal evidence CSV', type=['csv'])
         choices = list(model_options)+['AUTO']
         tool = st.selectbox('Which AI produced the responses?', choices,
@@ -185,7 +189,10 @@ with st.form('agent_form'):
                'all': 'Copy + research publications (green)',
                'research': 'Research an existing reviewed workbook (no PDFs needed)'}[v])
         policy = st.selectbox('Green-column policy', ['verified-only', 'provisional'],
-            format_func=lambda v: 'Only human-verified real sources (recommended)' if v == 'verified-only' else 'Provisional source proposals (requires review)')
+            format_func=lambda v: 'Only human-verified real sources (strictest)' if v == 'verified-only' else 'Provisional source proposals (strict original-source identity checks)',
+            help='Both choices now require a specific original citation link or DOI/PMID independently corroborated by an authoritative publication record. '
+                 'Provisional permits evidence-based proposals pending review; verified-only additionally requires a human Real verdict in column U. '
+                 'Unresolved sources keep their original Blue citation and URL, while missing green values become NOT FOUND.')
         offline = st.checkbox('Offline: no web / API requests', value=False)
         no_ai = st.checkbox('Do not use paid AI API', value=True)
         inspect_pdfs = st.checkbox(
@@ -311,12 +318,23 @@ if result:
     )):
         cols[i].metric(title, value)
     st.caption(
-        'Excel now contains only one row per original linked source within each '
-        'AI platform and question. The same source may have separate rows for '
-        'different questions. Every repeated appearance remains in the evidence '
-        'reports, and research metadata is provisional. Green cells exclude '
-        'NR / NOT FOUND placeholders.'
+        'Strict citation matching: Excel retains one original source and link per '
+        'AI/question. A source cited in a different question gets a separate row. '
+        'Green publication facts are proposed only from independently corroborated '
+        'source records; unknown research fields say NOT FOUND, not an invented '
+        'title, author, journal, or country. Green cells exclude missing placeholders.'
     )
+    if report.get('source_identification_policy'):
+        not_identified = report.get('sources_not_independently_identified', 0)
+        skipped = report.get('sources_skipped_no_original_locator', 0)
+        st.info(
+            f"Strict matching: {report.get('sources_passing_strict_identity', 0)} "
+            f"research lookups matched an authoritative publication identifier; "
+            f"{not_identified} lacked sufficient original-to-record proof"
+            + (f", and {skipped} had no explicit source locator." if skipped else ".")
+            + " Original citation labels/links remain in blue. Missing green "
+              "fields use NOT FOUND (2026 JCR impact factor stays blank)."
+        )
     if report.get('legacy_workbook_duplicate_rows_combined', 0):
         st.success(
             f"Existing workbook: safely consolidated "
