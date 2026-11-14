@@ -83,7 +83,7 @@ def unique_question_sources(appearances):
         numbers[key] = numbers.get(key, 0) + 1
         chosen = dict(group['chosen'])
         chosen['order'] = numbers[key]
-        chosen['repeat'] = 'N'  # no duplicate rows remain
+        chosen['repeat'] = 'Y' if group['count'] > 1 else 'N'  # repeated within answer
         chosen['occurrence_count'] = group['count']
         chosen['original_appearance_orders'] = group['appearance_orders']
         chosen['original_source_files'] = sorted(group['source_files'])
