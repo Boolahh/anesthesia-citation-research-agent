@@ -45,7 +45,7 @@ class StrictBibliographyIdentityTests(TestCase):
         })
         ok, reason = reliable_original_identity(source(), e)
         self.assertFalse(ok)
-        self.assertIn('not independently confirmed',reason)
+        self.assertIn('No authoritative bibliographic publication record',reason)
 
     def test_pubmed_record_link_matches_pubmed_record_id(self):
         c = source(url='https://pubmed.ncbi.nlm.nih.gov/12345678/#7')
