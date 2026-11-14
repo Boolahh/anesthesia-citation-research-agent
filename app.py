@@ -5,7 +5,7 @@ survive Streamlit reruns; a full page reload can clear the current session.
 """
 from __future__ import annotations
 
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile, ZIP_DEFLATED
 import csv
@@ -94,7 +94,7 @@ def result_zip(report_dir, workbook):
                      'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
                      'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv',
                      'source_alias_review.csv', 'first_author_source_coverage.csv',
-                     'source_access_review.csv'):
+                     'source_access_review.csv', 'citation_counts_by_question.csv'):
             candidate = Path(report_dir)/name
             if candidate.exists():
                 z.write(candidate, name)
@@ -284,6 +284,7 @@ if submit:
                             'source_alias': (reports/'source_alias_review.csv').read_bytes(),
                             'first_author_sources': (reports/'first_author_source_coverage.csv').read_bytes(),
                             'source_access': (reports/'source_access_review.csv').read_bytes(),
+                            'citation_counts': (reports/'citation_counts_by_question.csv').read_bytes(),
                             'package': result_zip(reports, output),
                             'log': proc.stdout[-14000:],
                         }
@@ -301,14 +302,42 @@ if result:
     st.caption('All downloads stay available after each click. Closing/reloading the browser tab can clear this temporary session.')
     cols = st.columns(5)
     for i, (title, value) in enumerate((
-        ('Citation candidates', report['citations_extracted']),
-        ('Research candidates', report['sources_researched']),
-        ('Metadata found', report.get('sources_with_metadata', 0)),
-        ('Green values in workbook', report.get('informative_green_cells_in_output_workbook', 0)),
+        ('Citation appearances', report['citations_extracted']),
+        ('Distinct source identities', report.get('distinct_sources_within_questions', 0)),
+        ('Repeated appearances', report.get('repeated_source_occurrences', 0)),
+        ('Green cells in workbook', report.get('informative_green_cells_in_output_workbook', 0)),
         ('Review items', report.get('review_queue_items', report['warning_count'])),
     )):
         cols[i].metric(title, value)
-    st.caption('Green values counts substantive cell contents, not NR / NOT FOUND placeholders. All research values remain provisional until reviewed.')
+    st.caption(
+        'Citation appearances count every time a source is cited, including repeats; '
+        'distinct linked identities count the source once within each question. '
+        'Neither is automatically a count of independently verified publications. '
+        'Green cells count substantive proposed content, excluding NR / NOT FOUND.'
+    )
+    if report.get('repeated_source_occurrences', 0):
+        st.info(
+            f"**Why can five references appear as dozens of citations?** "
+            f"This export has {report['citations_extracted']} appearances, "
+            f"including {report['repeated_source_occurrences']} repeats. "
+            f"Your study protocol's newer occurrence-counting rule counts each "
+            f"visible citation appearance. The distinct-source and reference-list "
+            f"counts are in the table below; do not mistake repeat links for new papers."
+        )
+    if result.get('citation_counts'):
+        with st.expander('Citations per question: appearances versus distinct references', expanded=True):
+            count_rows = list(csv.DictReader(StringIO(
+                result['citation_counts'].decode('utf-8-sig'))))
+            st.dataframe([{
+                'Model': row['tool'],
+                'Question': row['question'],
+                'Citation appearances': int(row['citation_occurrences']),
+                'Distinct linked sources': int(row['distinct_linked_source_identities']),
+                'Reference-list entries': int(row['bibliography_entries']),
+                'Repeat appearances': int(row['repeat_occurrences']),
+            } for row in count_rows], hide_index=True, use_container_width=True)
+            st.caption('The source numbers are only candidates: bibliography entries '
+                       'and repeated hyperlinks are not proof of verified publications.')
     if 'distinct_sources_researched' in report:
         st.caption(
             f"Unique-source analysis: {report['distinct_sources_researched']} source identities researched "
@@ -423,6 +452,9 @@ if result:
             mime='text/csv', use_container_width=True)
         st.download_button('Download unresolved source-access review (CSV)',
             result['source_access'], file_name='source_access_review.csv',
+            mime='text/csv', use_container_width=True)
+        st.download_button('Download per-question citation counts (CSV)',
+            result['citation_counts'], file_name='citation_counts_by_question.csv',
             mime='text/csv', use_container_width=True)
     if report.get('tools_detected'):
         with st.expander('Model and question coverage'):
