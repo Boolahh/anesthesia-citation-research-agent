@@ -572,6 +572,10 @@ def _research_audit(rows, proposals):
         key = (citation['tool'], citation['question'], int(citation['order']))
         proposed = proposals_by_key.get(key)
         status = 'not_researched'
+        if not proposed and citation.get('url') in ('', 'NR', 'NOT FOUND', None) and (
+                citation.get('doi') in ('', 'NR', 'NOT FOUND', None)
+                and citation.get('pmid') in ('', 'NR', 'NOT FOUND', None)):
+            status = 'no_original_source_locator'
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
@@ -597,6 +601,9 @@ def _research_audit(rows, proposals):
         sources = sorted({v.get('source', '') for v in (proposed.get('field_provenance') or {}).values()
                           if isinstance(v, dict) and v.get('source')}) if proposed else []
         reasons = proposed.get('review_flags') or [] if proposed else []
+        if status == 'no_original_source_locator':
+            reasons = ['No link or DOI/PMID shown in original PDF; citation text retained in blue, '
+                       'research metadata NOT FOUND pending manual identification']
         if proposed and proposed.get('error'):
             reasons = list(reasons) + [str(proposed['error'])[:250]]
         result.append({
