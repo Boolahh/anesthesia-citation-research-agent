@@ -55,6 +55,21 @@ class StrictBibliographyIdentityTests(TestCase):
         self.assertTrue(ok)
         self.assertIn('PubMed', basis)
 
+    def test_explicit_original_pmid_without_url_is_authoritative_locator(self):
+        c = source(url='NR')
+        c['pmid'] = '12345678'
+        e = evidence(pmid='12345678', pubmed={
+            'pmid':'12345678','title':'Synthetic clinical publication'})
+        self.assertTrue(reliable_original_identity(c,e)[0])
+
+    def test_official_bvs_medline_identifier_can_match_pubmed_id(self):
+        c = source(url='https://pesquisa.bvsalud.org/portal/resource/pt/mdl-12345678')
+        e = evidence(pmid='12345678', pubmed={
+            'pmid':'12345678','title':'Synthetic clinical publication'})
+        self.assertTrue(reliable_original_identity(c,e)[0])
+        c['url']='https://busqueda.tmgl.org/portal/resource/pt/mdl-12345678'
+        self.assertFalse(reliable_original_identity(c,e)[0])
+
     def test_nonrecord_pubmed_search_page_is_never_a_paper(self):
         c = source(url='https://pubmed.ncbi.nlm.nih.gov/?term=anesthesia')
         e = evidence(pmid='12345678',pubmed={
