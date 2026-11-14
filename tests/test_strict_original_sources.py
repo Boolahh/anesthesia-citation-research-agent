@@ -156,7 +156,7 @@ class StrictGreenFieldTests(TestCase):
         self.assertFalse(result['can_autowrite'])
         self.assertEqual(result['fields']['Z'],'NOT FOUND')
         self.assertEqual(result['fields']['AN'],'NOT FOUND')
-        self.assertIn('original citation and URL',
+        self.assertIn('original citation and url',
                       ' '.join(result['review_flags']).lower())
 
     def test_unlinked_long_title_is_not_automatically_searched(self):
