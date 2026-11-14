@@ -47,7 +47,7 @@ class DistinctSourceRuleTests(TestCase):
         self.assertEqual(clean[0]['occurrence_count'],23)
         self.assertEqual(clean[0]['citation'],
                          'Important consensus guideline, complete original source reference')
-        self.assertEqual(clean[0]['repeat'],'N')
+        self.assertEqual(clean[0]['repeat'],'Y')
         self.assertEqual(len(rows),26)  # raw source evidence remains unchanged
         counts=citation_census_by_question(rows)
         self.assertEqual(next(x for x in counts if (x['tool'],x['question'])==('CLG','Q01'))
@@ -58,6 +58,7 @@ class DistinctSourceRuleTests(TestCase):
         rows=[citation('DSK','Q01',n,url,str(n)) for n in range(1,30)]
         self.assertEqual(len(unique_question_sources(rows)),1)
         self.assertEqual(unique_question_sources(rows)[0]['occurrence_count'],29)
+        self.assertEqual(unique_question_sources(rows)[0]['repeat'],'Y')
 
     def test_bibliography_doi_text_does_not_duplicate_original_same_url(self):
         url='https://medical.org/paper'
@@ -114,6 +115,7 @@ class LegacyWorkbookMigrationTests(TestCase):
             self.assertEqual(retained['Z'],'Stable candidate title')
             self.assertEqual(retained['U'],'Real - correct')
             self.assertEqual(retained['C'],'1')
+            self.assertEqual(retained['L'],'Y')
             self.assertEqual(legacy.get_row(old[1]).get('A',''),'')
             self.assertEqual(legacy.get_row(old[2])['C'],'2')
             new=Path(tmp)/'new.xlsx'
