@@ -137,11 +137,17 @@ def strict_green_values(fields, provenance, eligible):
 
     values = {}
     for col in GREEN_COLS:
-        if col == 'BE':
-            values[col] = ''
-            continue
         value = fields.get(col, MISSING)
         source = str((provenance.get(col) or {}).get('source') or '')
+        if col == 'BE':
+            # Only an actual investigator-provided licensed JCR record may
+            # populate this restricted measure; never estimate it.
+            values[col] = (
+                value if eligible and
+                source == 'Investigator-supplied licensed 2026 Journal Citation Reports'
+                and value not in ('', 'NR', 'NOT FOUND', None) else ''
+            )
+            continue
         if not eligible:
             values[col] = MISSING
         elif value in ('', None, 'NR', 'NOT FOUND'):
