@@ -753,7 +753,8 @@ def main(argv=None):
     if args.stage in ('research', 'all'):
         bibliography = Bibliography(wb.data.countries, ROOT/'cache', args.contact_email,
                                    offline=args.offline,
-                                   inspect_linked_pdfs=args.inspect_linked_pdfs)
+                                   inspect_linked_pdfs=args.inspect_linked_pdfs,
+                                   allow_title_search=False)
         journal_database = load_journal_evidence(args.journal_evidence, wb.data.countries)
         # Compute eligibility *after* considering column X, so reports can
         # distinguish skipped citations from those left out by the research cap.
@@ -868,6 +869,7 @@ def main(argv=None):
             row['bibliography_distinct_sources'] for row in citation_census),
         'citation_counting_method': 'one distinct linked source per model and question in Excel; keep raw appearances in audit exports',
         'source_identification_policy': 'strict authoritative link-to-record evidence; unresolved green fields NOT FOUND',
+        'speculative_title_search_enabled': False,
         'sources_passing_strict_identity': sum(p.get('strict_source_identified') is True for p in research),
         'sources_not_independently_identified': sum(p.get('strict_source_identified') is False for p in research),
         'sources_skipped_no_original_locator': max(
