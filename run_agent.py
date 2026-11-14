@@ -33,7 +33,7 @@ from agent.journal_evidence import load_journal_evidence, supplement_journal_fie
 from agent.source_coverage import (geography_candidate_sources, source_access_review,
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
-from agent.source_dedup import unique_question_sources
+from agent.source_dedup import unique_question_sources, source_key
 
 ROOT = Path(__file__).resolve().parent
 APP_VERSION = '2.4.0'
@@ -320,7 +320,7 @@ def _source_research_summary(rows, research):
     indexed = {(p['tool'],p['question'],int(p['order'])):p for p in research}
     grouped = defaultdict(list)
     for item in rows:
-        grouped[(item['tool'],item['question'],citation_identity(item))].append(item)
+        grouped[(item['tool'],item['question'],source_key(item))].append(item)
 
     def unique(values, limit=1500):
         seen = []
@@ -351,8 +351,11 @@ def _source_research_summary(rows, research):
         notes += [note for p in proposals for note in (p.get('review_flags') or [])]
         result.append({
             'tool':tool,'question':question,'source_identity':identity,
-            'citation_occurrences':len(items),
-            'citation_orders':unique([item['order'] for item in items],500),
+            'citation_occurrences':sum(int(item.get('occurrence_count') or 1) for item in items),
+            'citation_orders':unique([
+                n for item in items for n in
+                (item.get('original_appearance_orders') or [item['order']])
+            ],500),
             'contexts':unique([item.get('source_context') for item in items]),
             'as_cited_examples':unique([item['citation'] for item in
                                         sorted(items,key=lambda x:-len(x.get('citation','')))],1000),
