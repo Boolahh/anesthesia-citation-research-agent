@@ -44,6 +44,9 @@ class TestDownloadPersistence(TestCase):
             (reports / 'source_alias_review.csv').write_text('tool,question,proposed_title\n')
             (reports / 'first_author_source_coverage.csv').write_text('tool,question,candidate_identity\n')
             (reports / 'source_access_review.csv').write_text('tool,question,original_urls\n')
+            (reports / 'citation_counts_by_question.csv').write_text(
+                'tool,question,citation_occurrences,distinct_linked_source_identities,'
+                'bibliography_entries,repeat_occurrences\nCGP,Q01,1,1,1,0\n')
             (reports / 'run_report.json').write_text(json.dumps({
                 'citations_extracted': 1,
                 'sources_researched': 0,
@@ -78,16 +81,17 @@ class TestDownloadPersistence(TestCase):
                  patch('subprocess.Popen', side_effect=FakePopen), \
                  patch.object(Path, 'read_bytes', read_bytes):
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 12)
+                self.assertEqual(st.download_button.call_count, 13)
                 self.assertEqual(len(ran), 1)
                 self.assertEqual(st.session_state['latest_result']['workbook'], b'filled-xlsx-for-testing')
                 # A click on a download button reruns the Streamlit app,
                 # but does not resubmit the form or delete its saved output.
                 runpy.run_path(str(ROOT / 'app.py'), run_name='__main__')
-                self.assertEqual(st.download_button.call_count, 24)
+                self.assertEqual(st.download_button.call_count, 26)
                 self.assertEqual(len(ran), 1)
-                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-12:]]
+                names = [c.kwargs['file_name'] for c in st.download_button.call_args_list[-13:]]
                 self.assertEqual(names, ['anesthesia_citation_research_package.zip', 'citation_extraction_filled.xlsx', 'run_report.json', 'citation_preview.csv', 'review_queue.csv', 'research_audit.csv', 'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv', 'source_alias_review.csv',
-                                         'first_author_source_coverage.csv', 'source_access_review.csv'])
+                                         'first_author_source_coverage.csv', 'source_access_review.csv',
+                                         'citation_counts_by_question.csv'])
         finally:
             sys.path.remove(str(ROOT))
