@@ -68,11 +68,44 @@ interface displayed them. Without evidence, the agent cannot safely decide
 whether two generic labels refer to the same publication. Export visible
 sources with URLs or review the original chat in these cases.
 
+## Strict original-source research policy (v2.4.1)
+
+**Default behavior is now evidence-only, even when the Green-column policy
+is set to Provisional.** A cited source is included in blue A–L when the
+original PDF contains an actual linked citation or an explicit bibliography
+entry. Its as-cited label remains in D and its original URL remains in E.
+A short linked badge or source number is not silently expanded into a
+guessed publication title.
+
+Green Z–BF fields may be filled from independently sourced publication
+metadata **only if the original citation identifies that same record**:
+for example, an original PubMed article link with the same PMID as the
+PubMed record; a displayed DOI that exactly matches an official Crossref
+record; or an actual linked article page whose embedded citation DOI and
+full title match the independent DOI registry. Even these remain provisional
+until a human verifies the citation. Title similarity searches, general
+webpage headlines, publisher-domain inference, AI-generated research
+guesses and author-country estimates do **not** establish source identity.
+
+If the agent cannot identify a source, it **keeps its original citation and
+link row** and writes the workbook-supported **`NOT FOUND`** placeholder
+in missing green research cells (leaving the licensed JCR impact-factor
+field blank). The research audit explains why the source remains unresolved.
+Neither `NOT FOUND` nor a successful PubMed lookup automatically labels
+the original AI citation real or hallucinated.
+
+Existing substantive green values in an uploaded older workbook are not
+automatically deleted, because they may be human-reviewed. For a completely
+clean strict audit, start from the original blank study template and add
+the models in sequence. If a citation has no original URL and no explicit
+DOI/PMID, the agent does not invent an identifying link or try to pick a
+paper merely because the title looks similar.
+
 ## What exactly gets written
 
 - **A–L (blue):** one representative original citation and original link per distinct source **within the model/question**; the same source can have another row for another question. Duplicate appearances are retained in the raw evidence ZIP, rather than being written as extra blue rows. Source URLs are never replaced by subsequently researched links.
 - **M–Y (human only):** tool metadata, human source-verdict in U, reference error category, independently verified URL in X and audit status; never inferred by the agent.
-- **Z–BF (green):** *proposed* real-source bibliographic fields, using DOI/PMID, PubMed EFetch, Europe PMC, Crossref, OpenAlex and public publisher metadata. Includes field-level source URLs in `research_proposals.json`. The agent does not accept a database lookup as proof that a citation is correct.
+- **Z–BF (green):** independently corroborated bibliographic proposals only when the original cited source and authoritative publication record match; otherwise the study's `NOT FOUND` placeholder. BE (licensed JCR) remains blank without licensed verified data. Every sourced field retains provenance in `research_proposals.json`.
 - **BG–BR (human only):** gender, race/ethnicity, checking the proposed green fields, and reviewer notes; never inferred or overwritten by the agent.
 - Other workbook sheets/formulas/styles/dropdowns are maintained by narrowly editing only the `Data_Extraction` and `Query_Log` worksheet XML.
 
