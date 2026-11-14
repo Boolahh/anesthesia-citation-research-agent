@@ -35,6 +35,10 @@ def _article_pmid(url):
     if host in ('europepmc.org', 'www.europepmc.org'):
         match = re.fullmatch(r'/article/MED/(\d{6,9})', path, re.I)
         return match.group(1) if match else ''
+    if host == 'pesquisa.bvsalud.org':
+        match = re.fullmatch(r'/(?:portal/)?resource/[^/]+/mdl-(\d{6,9})',
+                             path, re.I)
+        return match.group(1) if match else ''
     return ''
 
 
@@ -98,6 +102,10 @@ def reliable_original_identity(original, evidence):
     cited_doi = _doi(original.get('doi'))
     if (not url or url == 'NR') and cited_doi and cited_doi == doi == official_doi:
         return True, 'Original explicit citation DOI matches authoritative publication DOI'
+    cited_pmid = str(original.get('pmid') or '')
+    if ((not url or url == 'NR') and cited_pmid.isdigit() and
+            cited_pmid == pmid == official_pmid and pubmed):
+        return True, 'Original explicit citation PMID matches authoritative PubMed record'
 
     pmc = _pmcid(url)
     if (pmc and (europe or pubmed) and
