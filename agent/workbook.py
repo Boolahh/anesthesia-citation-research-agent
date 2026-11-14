@@ -195,7 +195,12 @@ class TemplateWorkbook:
                 else:
                     plans.append((group, grouped[identity], rn))
             if len(keepers) < len(records):
-                affected[group] = (len(records), keepers)
+                occurrences = defaultdict(int)
+                for _, _, identity in records:
+                    occurrences[identity] += 1
+                affected[group] = (len(records), keepers, {
+                    grouped[identity]: count for identity, count in occurrences.items()
+                })
         if not plans:
             self._index_source_identities()
             return 0
@@ -238,13 +243,13 @@ class TemplateWorkbook:
                 f'Combined older duplicate source row {duplicate} into '
                 f'row {keeper} for {group[0]}/{group[1]}. '
                 'Human/research fields were preserved if consistent.')
-        for (tool, question), (old_count, keepers) in affected.items():
+        for (tool, question), (old_count, keepers, repeats_by_row) in affected.items():
             for new_order, rn in enumerate(keepers, 1):
                 row = self.data_rows[rn]
                 if row_dict(row).get('C') != str(new_order):
                     set_value(row, 'C', new_order)
-                if row_dict(row).get('L') != 'N':
-                    set_value(row, 'L', 'N')
+                if repeats_by_row.get(rn, 1) > 1:
+                    set_value(row, 'L', 'Y')
             # Column J is the agent-managed query citation count. Correct a
             # historic raw-appearance count only when it matches the old rows.
             key = f'{tool}-{question}'
@@ -337,6 +342,12 @@ class TemplateWorkbook:
                 citation.get('pmid') or 'NR',citation.get('repeat') or 'N']
         for col,val in zip(BLUE_COLS,fields):
             previous=old.get(col,'')
+            # Blue L indicates whether the retained source was referenced
+            # repeatedly within this answer; it remains meaningful with one row.
+            if col == 'L' and previous != str(val):
+                set_value(row, col, val)
+                self.changed.add('Data_Extraction')
+                continue
             if previous and str(previous) != str(val):
                 self.warnings.append(f'Preserved existing {col}{rn}; attempted conflicting value for {key}: {str(val)[:90]}')
                 continue
