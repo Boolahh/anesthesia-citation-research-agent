@@ -33,9 +33,10 @@ from agent.journal_evidence import load_journal_evidence, supplement_journal_fie
 from agent.source_coverage import (geography_candidate_sources, source_access_review,
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
+from agent.source_dedup import unique_question_sources, source_key
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.3.2'
+APP_VERSION = '2.4.0'
 
 
 def write_json(path, payload):
@@ -319,7 +320,7 @@ def _source_research_summary(rows, research):
     indexed = {(p['tool'],p['question'],int(p['order'])):p for p in research}
     grouped = defaultdict(list)
     for item in rows:
-        grouped[(item['tool'],item['question'],citation_identity(item))].append(item)
+        grouped[(item['tool'],item['question'],source_key(item))].append(item)
 
     def unique(values, limit=1500):
         seen = []
@@ -350,8 +351,11 @@ def _source_research_summary(rows, research):
         notes += [note for p in proposals for note in (p.get('review_flags') or [])]
         result.append({
             'tool':tool,'question':question,'source_identity':identity,
-            'citation_occurrences':len(items),
-            'citation_orders':unique([item['order'] for item in items],500),
+            'citation_occurrences':sum(int(item.get('occurrence_count') or 1) for item in items),
+            'citation_orders':unique([
+                n for item in items for n in
+                (item.get('original_appearance_orders') or [item['order']])
+            ],500),
             'contexts':unique([item.get('source_context') for item in items]),
             'as_cited_examples':unique([item['citation'] for item in
                                         sorted(items,key=lambda x:-len(x.get('citation','')))],1000),
@@ -693,23 +697,34 @@ def main(argv=None):
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     wb = TemplateWorkbook(args.template)
+    legacy_rows_combined = wb.compact_existing_sources() if args.command == 'run' else 0
     ai = choose_ai(args)
     if args.command == 'scan' or args.stage in ('blue', 'all'):
-        rows, documents, warnings = gather(args, wb, ai)
+        appearances, documents, warnings = gather(args, wb, ai)
+        rows = unique_question_sources(appearances)
     else:
         # Research-only resumes from an edited/reviewed workbook, with no PDFs.
         rows, documents, warnings = _original_rows(wb), [], []
+        appearances = rows  # original appearance history requires the PDFs
     extraction_seconds = round(time.monotonic() - run_started, 2)
+    write_json(report_dir/'citation_occurrences_raw.json', appearances)
     write_json(report_dir/'citations_extracted.json', rows)
+    citation_census = citation_census_by_question(appearances, documents)
+    write_csv(report_dir/'citation_counts_by_question.csv',
+              citation_census, CITATION_CENSUS_FIELDS)
     write_csv(report_dir/'citation_preview.csv', rows,
         ['tool','question','order','citation','url','title','authors','year','journal','doi','pmid','repeat',
+         'occurrence_count','original_appearance_orders',
          'source_file','source_page','extraction_method','extraction_confidence',
          'source_context','pdf_sha256'])
     source_review = _source_quality_review(rows)
     write_csv(report_dir/'source_quality_review.csv', source_review, SOURCE_QUALITY_FIELDS)
     if args.command == 'scan':
         write_json(report_dir/'scan_report.json', {
-            'documents': documents, 'citations': len(rows), 'warnings': warnings,
+            'documents': documents, 'unique_citation_rows': len(rows),
+            'citation_appearances': len(appearances),
+            'repeated_appearances': len(appearances) - len(rows),
+            'warnings': warnings,
             'elapsed_seconds': round(time.monotonic() - run_started, 2)})
         queue = _review_rows(rows, [], warnings)
         write_csv(report_dir/'review_queue.csv', queue,
@@ -801,8 +816,6 @@ def main(argv=None):
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     source_level = _source_research_summary(rows, research)
     write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
-    citation_census = citation_census_by_question(rows, documents)
-    write_csv(report_dir/'citation_counts_by_question.csv', citation_census, CITATION_CENSUS_FIELDS)
     first_author_sources = geography_candidate_sources(rows, research)
     write_csv(report_dir/'first_author_source_coverage.csv', first_author_sources, GEO_SOURCE_FIELDS)
     access_review = source_access_review(rows, research)
@@ -833,6 +846,11 @@ def main(argv=None):
         'extraction_seconds': extraction_seconds,
         'research_seconds': research_seconds,
         'input_documents': documents, 'citations_extracted': len(rows),
+        'unique_source_rows_added_or_revisited': len(rows),
+        'total_unique_source_rows_in_workbook': len(wb.existing),
+        'citation_appearances_extracted': len(appearances),
+        'duplicate_appearances_collapsed': len(appearances) - len(rows),
+        'legacy_workbook_duplicate_rows_combined': legacy_rows_combined,
         'documents_with_no_citations': sum(doc.get('citations') == 0 for doc in documents),
         'documents_with_unresolved_question': sum(not doc.get('question') for doc in documents),
         'documents_suspected_image_only': sum(
@@ -844,7 +862,7 @@ def main(argv=None):
             row['distinct_linked_source_identities'] for row in citation_census),
         'distinct_bibliography_sources_within_questions': sum(
             row['bibliography_distinct_sources'] for row in citation_census),
-        'citation_counting_method': 'every visible source occurrence (including repeats)',
+        'citation_counting_method': 'one distinct linked source per model and question in Excel; keep raw appearances in audit exports',
         'citation_counts_by_question_file': str(report_dir/'citation_counts_by_question.csv'),
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
@@ -866,11 +884,11 @@ def main(argv=None):
         'possible_source_alias_groups': len(alias_review),
         'possible_source_alias_occurrences': sum(
             p['citation_occurrences'] for p in alias_review),
-        'repeated_source_occurrences': sum(item.get('repeat') == 'Y' for item in rows),
+        'repeated_source_occurrences': len(appearances) - len(rows),
         'explicit_bibliography_occurrences': sum(
-            item.get('source_context') == 'bibliography' for item in rows),
+            item.get('source_context') == 'bibliography' for item in appearances),
         'in_text_link_occurrences': sum(
-            item.get('source_context') == 'inline_link' for item in rows),
+            item.get('source_context') == 'inline_link' for item in appearances),
         'short_or_generic_source_labels': sum(
             item['short_or_generic_label'] == 'Y' for item in source_review),
         'expected_numbered_citation_markers': sum(
@@ -939,7 +957,8 @@ def main(argv=None):
     }
     write_json(report_dir/'run_report.json', report)
     print(f'\n[SAVED] {output}\n[REPORT] {report_dir/"run_report.json"}\n'
-          f'[SUMMARY] {len(rows)} citation candidates, {len(research)} source lookups, '
+          f'[SUMMARY] {len(rows)} unique source rows from '
+          f'{len(appearances)} citation appearances, {len(research)} source lookups, '
           f'{report["rows_written_green"]} green rows, {len(queue)} review items')
     return 0
 

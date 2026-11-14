@@ -33,40 +33,44 @@ The 12 standardized questions and 16 platform definitions are read *directly* fr
 
 Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
-## Why 5 cited papers can appear as 50 citation rows
+## One Excel row per source per question (v2.4.0)
 
-**Citation appearances are not unique publications.** Claude and ChatGPT
-exports may contain links repeated throughout the body *and* bibliography.
-For example, the original Claude postoperative-nausea PDF in the
-investigator's local audit contains **24 linked appearances, 3 distinct
-link identities, and 2 explicitly listed bibliography entries**. The same
-NYSORA link appears 22 times. Different linked URLs may also point to
-the same real publication, so distinct *links* are not confirmed distinct
-papers.
+The investigator has explicitly chosen **one source row per AI model + question**,
+regardless of how many times the model references the same linked source in
+that answer. The same source can appear in different questions (or for
+different AI platforms), so each separate model/question gets its own row.
 
-The current study's newer preregistration (page 15) explicitly counts a
-source every time it appears, even if repeated within one response. An
-older section (page 84) uses one citation per distinct source. The app
-**does not silently choose the older rule** or delete source occurrences.
-Instead every run now provides:
+For example, a Claude PONV PDF contained **24 original citation appearances**
+but only **3 distinct linked source identities**. The same NYSORA link appeared
+22 times. Version 2.4.0 now creates three unique source rows, rather than 24
+appearance rows, and separately saves every original appearance in
+`citation_occurrences_raw.json`. The per-question CSV
+`citation_counts_by_question.csv` shows original appearances, repeats,
+distinct source links, and reference-list entries. Only original-source
+identity evidence—not a similar article title—is used to merge automatically.
 
-- A clear UI display of citation appearances, repeat appearances, and
-  distinct linked source identities, with a question-by-question table.
-- `citation_counts_by_question.csv` in the ZIP, including reference-list
-  entries and unlinked citations. **Do not equate the bibliography count,
-  source-link count, and appearance count.**
-- The full `citations_extracted.json`, `citation_preview.csv`, and
-  `source_level_research.csv` for reviewer reconciliation.
+**Study protocol note:** An earlier preregistration section (page 15) counted
+each appearance, while a different section (page 84) used distinct-source
+counting. The investigator's explicit revised workbook rule is now distinct
+linked sources per model/question. Review/update your study analysis plan and
+report this change transparently; the raw appearance evidence is retained for
+either analysis.
 
-Some ChatGPT PDF exports contain **no clickable citation links**, even
-when the original chat interface displayed sources. A PDF cannot
-reconstruct source URLs it never contained. Re-export the original
-response with visible references and links, or review the original chat
-before finalizing the citation census.
+When adding a new model, upload the newest completed Excel workbook in the
+**Reviewed Excel workbook** field. The agent first consolidates legacy
+duplicate-source rows from older releases **only if** reviewer values and
+research fields are consistent. If two duplicate rows conflict, the run
+stops with their exact row numbers and columns rather than deleting human
+decisions. The original input workbook is never overwritten.
+
+Some ChatGPT PDF exports contain no clickable sources even though the chat
+interface displayed them. Without evidence, the agent cannot safely decide
+whether two generic labels refer to the same publication. Export visible
+sources with URLs or review the original chat in these cases.
 
 ## What exactly gets written
 
-- **A–L (blue):** the citation as displayed, original link as displayed, original title/author/year/journal/DOI/PMID and whether the reference was repeated. Links in this area are never replaced by a publisher URL found later.
+- **A–L (blue):** one representative original citation and original link per distinct source **within the model/question**; the same source can have another row for another question. Duplicate appearances are retained in the raw evidence ZIP, rather than being written as extra blue rows. Source URLs are never replaced by subsequently researched links.
 - **M–Y (human only):** tool metadata, human source-verdict in U, reference error category, independently verified URL in X and audit status; never inferred by the agent.
 - **Z–BF (green):** *proposed* real-source bibliographic fields, using DOI/PMID, PubMed EFetch, Europe PMC, Crossref, OpenAlex and public publisher metadata. Includes field-level source URLs in `research_proposals.json`. The agent does not accept a database lookup as proof that a citation is correct.
 - **BG–BR (human only):** gender, race/ethnicity, checking the proposed green fields, and reviewer notes; never inferred or overwritten by the agent.
@@ -78,11 +82,11 @@ The system reads PubMed XML **author by author** and rejects repeated composite 
 
 ### Source research performance and PDF coverage (v2.2)
 
-The research engine reuses independent bibliographic evidence for repeat citations
-with the **same original source identity and as-cited details**. The export still
-retains each separate citation occurrence and its own Excel row. A distinct
-`source_memo_reuses` count appears in `run_report.json`. Source memoization
-is not verification, and ambiguous references still go into the review queue.
+The research engine now researches **one unique source row per model/question**,
+rather than repeatedly researching its many appearances. Every original
+appearance remains in the evidence ZIP. Other cache hits and cross-question
+memo reuses are distinguished from actual verification; ambiguous linked
+identities remain in the review queue.
 
 Streamlit now shows live extraction/research progress rather than only an
 unchanging spinner. Binary PDFs are not passed through the HTML scraper.
