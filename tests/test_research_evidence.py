@@ -167,7 +167,7 @@ class SourceIdentityTests(TestCase):
                    'identifiers':{'doi':'10.12/b','pmid':'1234'}}]
         report=_research_audit(inputs, proposed)
         self.assertEqual(len(report),2)
-        self.assertEqual(report[0]['research_status'],'not_researched')
+        self.assertEqual(report[0]['research_status'],'no_original_source_locator')
         self.assertEqual(report[1]['research_status'],'identity_conflict_or_ambiguous_source')
         self.assertEqual(report[1]['informative_green_fields'],2)
         self.assertIn('PubMed',report[1]['metadata_sources'])
