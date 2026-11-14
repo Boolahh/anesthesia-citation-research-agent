@@ -91,7 +91,8 @@ def result_zip(report_dir, workbook):
     with ZipFile(output, 'w', compression=ZIP_DEFLATED) as z:
         z.writestr('citation_extraction_filled.xlsx', Path(workbook).read_bytes())
         for name in ('run_report.json', 'citation_preview.csv', 'review_queue.csv',
-                     'research_proposals.json', 'citations_extracted.json', 'research_audit.csv',
+                     'research_proposals.json', 'citations_extracted.json',
+                     'citation_occurrences_raw.json', 'research_audit.csv',
                      'geography_review.csv', 'source_quality_review.csv', 'source_level_research.csv',
                      'source_alias_review.csv', 'first_author_source_coverage.csv',
                      'source_access_review.csv', 'citation_counts_by_question.csv'):
@@ -302,27 +303,34 @@ if result:
     st.caption('All downloads stay available after each click. Closing/reloading the browser tab can clear this temporary session.')
     cols = st.columns(5)
     for i, (title, value) in enumerate((
-        ('Citation appearances', report['citations_extracted']),
-        ('Distinct source identities', report.get('distinct_sources_within_questions', 0)),
-        ('Repeated appearances', report.get('repeated_source_occurrences', 0)),
+        ('Unique source rows', report['citations_extracted']),
+        ('Original appearances', report.get('citation_appearances_extracted', report['citations_extracted'])),
+        ('Repeats combined', report.get('duplicate_appearances_collapsed', 0)),
         ('Green cells in workbook', report.get('informative_green_cells_in_output_workbook', 0)),
         ('Review items', report.get('review_queue_items', report['warning_count'])),
     )):
         cols[i].metric(title, value)
     st.caption(
-        'Citation appearances count every time a source is cited, including repeats; '
-        'distinct linked identities count the source once within each question. '
-        'Neither is automatically a count of independently verified publications. '
-        'Green cells count substantive proposed content, excluding NR / NOT FOUND.'
+        'Excel now contains only one row per original linked source within each '
+        'AI platform and question. The same source may have separate rows for '
+        'different questions. Every repeated appearance remains in the evidence '
+        'reports, and research metadata is provisional. Green cells exclude '
+        'NR / NOT FOUND placeholders.'
     )
+    if report.get('legacy_workbook_duplicate_rows_combined', 0):
+        st.success(
+            f"Existing workbook: safely consolidated "
+            f"{report['legacy_workbook_duplicate_rows_combined']} older duplicate "
+            f"source rows without discarding conflicting reviewer decisions."
+        )
     if report.get('repeated_source_occurrences', 0):
         st.info(
-            f"**Why can five references appear as dozens of citations?** "
-            f"This export has {report['citations_extracted']} appearances, "
-            f"including {report['repeated_source_occurrences']} repeats. "
-            f"Your study protocol's newer occurrence-counting rule counts each "
-            f"visible citation appearance. The distinct-source and reference-list "
-            f"counts are in the table below; do not mistake repeat links for new papers."
+            f"**Repeated links have been combined in Excel.** "
+            f"This export has "
+            f"{report.get('citation_appearances_extracted', report['citations_extracted'])} "
+            f"observed source appearances, but only {report['citations_extracted']} "
+            f"unique source rows for these AI questions. "
+            f"Repeated appearance details remain in the full evidence ZIP."
         )
     if result.get('citation_counts'):
         with st.expander('Citations per question: appearances versus distinct references', expanded=True):
@@ -336,8 +344,10 @@ if result:
                 'Reference-list entries': int(row['bibliography_entries']),
                 'Repeat appearances': int(row['repeat_occurrences']),
             } for row in count_rows], hide_index=True, use_container_width=True)
-            st.caption('The source numbers are only candidates: bibliography entries '
-                       'and repeated hyperlinks are not proof of verified publications.')
+            st.caption('The Excel workbook contains one distinct source row for '
+                       'each platform/question. This table also preserves the '
+                       'original appearance count for auditing. Different URLs '
+                       'to the same article may still require reviewer reconciliation.')
     if 'distinct_sources_researched' in report:
         st.caption(
             f"Unique-source analysis: {report['distinct_sources_researched']} source identities researched "
