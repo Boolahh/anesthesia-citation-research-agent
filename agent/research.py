@@ -455,13 +455,16 @@ def parse_pubmed_xml(xml_text):
 
 class Bibliography:
     def __init__(self, countries, cache_dir, email='', timeout=18, offline=False,
-                 inspect_linked_pdfs=False):
+                 inspect_linked_pdfs=False, allow_title_search=True):
         self.countries = countries
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
         self.offline = offline
         self.inspect_linked_pdfs = bool(inspect_linked_pdfs and not offline)
+        # Strict workbook runs prohibit speculative bibliographic title search.
+        # Keep the old default for explicit research/diagnostics and unit tests.
+        self.allow_title_search = bool(allow_title_search)
         self.email = email
         self.s = requests.Session()
         self.s.headers.update({'User-Agent': USER_AGENT + (f' mailto:{email}' if email else '')})
@@ -766,7 +769,7 @@ class Bibliography:
         title = citation.get('title') or ''
         title_words = re.findall(r'[A-Za-z]{3,}', title)
         search_hint = title_search_hint(title)
-        if not cross and not oa and not pubmed and not doi and search_hint:
+        if self.allow_title_search and not cross and not oa and not pubmed and not doi and search_hint:
             result = self.fetch_json('https://api.crossref.org/works',
                                      {'query.title': search_hint, 'rows': 3})
             items = ((result or {}).get('message') or {}).get('items') or []
@@ -788,7 +791,7 @@ class Bibliography:
                 match['warnings'].append('Crossref title search returned ambiguous or weak matches')
         # For clinical articles, PubMed's exact-title search can recover a
         # missing PMID/DOI when Crossref has no unambiguous candidate.
-        if not cross and not oa and not pubmed and not doi and search_hint:
+        if self.allow_title_search and not cross and not oa and not pubmed and not doi and search_hint:
             query = self.fetch_json('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi',
                                     {'db':'pubmed', 'term':f'"{search_hint}"[Title]',
                                      'retmode':'json', 'retmax':3,
