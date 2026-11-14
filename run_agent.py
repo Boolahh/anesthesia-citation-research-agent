@@ -554,7 +554,7 @@ def _geography_review(rows, proposals, workbook):
 RESEARCH_AUDIT_FIELDS = [
     'tool','question','order','excel_row','original_citation','original_url',
     'research_status','publication_title','research_doi','research_pmid',
-    'informative_green_fields','metadata_sources','source_document_status',
+    'informative_green_fields','metadata_sources','strict_identity_reason','source_document_status',
     'source_document_title_hint','source_document_kind','source_document_version',
     'review_reasons',
 ]
@@ -575,6 +575,8 @@ def _research_audit(rows, proposals):
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
+            elif proposed.get('strict_source_identified') is False:
+                status = 'source_identity_not_retrievable'
             elif (proposed.get('match') or {}).get('status') == 'non_source_search_results':
                 status = 'search_results_link_not_single_publication'
             elif not proposed.get('has_metadata'):
@@ -608,6 +610,7 @@ def _research_audit(rows, proposals):
             'research_pmid':(proposed or {}).get('identifiers',{}).get('pmid',''),
             'informative_green_fields':meaningful,
             'metadata_sources':'; '.join(sources),
+            'strict_identity_reason':(proposed or {}).get('strict_identity_reason',''),
             'source_document_status':((proposed or {}).get('source_document') or {}).get('status',''),
             'source_document_title_hint':((proposed or {}).get('source_document') or {}).get('title_hint',''),
             'source_document_kind':((proposed or {}).get('source_document') or {}).get('document_kind',''),
@@ -651,12 +654,12 @@ def research_candidate(item, wb):
         source = {**item, 'url': reviewed, 'source_url_verified': True}
     else:
         source = item
-    has_identifier = any(source.get(k) not in ('', 'NR', 'NOT FOUND', None)
-                         for k in ('url', 'doi', 'pmid'))
-    title = str(source.get('title') or '')
-    searchable_title = (len(re.findall(r'[A-Za-z]{3,}', title)) >= 7
-                        and 25 <= len(title) <= 240)
-    return rownum, source, (has_identifier or searchable_title)
+    # A similar title is not enough to decide which scholarly publication
+    # the AI actually cited. Preserve long unlinked bibliography entries in
+    # blue, but don't perform speculative title-only internet matching.
+    has_original_locator = any(source.get(k) not in ('', 'NR', 'NOT FOUND', None)
+                               for k in ('url', 'doi', 'pmid'))
+    return rownum, source, has_original_locator
 
 
 def main(argv=None):
@@ -860,6 +863,9 @@ def main(argv=None):
         'source_identification_policy': 'strict authoritative link-to-record evidence; unresolved green fields NOT FOUND',
         'sources_passing_strict_identity': sum(p.get('strict_source_identified') is True for p in research),
         'sources_not_independently_identified': sum(p.get('strict_source_identified') is False for p in research),
+        'sources_skipped_no_original_locator': max(
+            0, len(rows) - researchable_count),
+        'missing_research_placeholder': 'NOT FOUND',
         'citation_counts_by_question_file': str(report_dir/'citation_counts_by_question.csv'),
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
