@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
+from agent.source_dedup import source_key
 from zipfile import ZipFile
 import json
 import gzip
@@ -149,6 +150,131 @@ class TemplateWorkbook:
         self.free_rows = [r for r in sorted(self.data_rows) if r >= 4 and not row_dict(self.data_rows[r]).get('A')]
         self.changed = set()
         self.row_for = {}
+        self.existing_by_identity = {}
+        self._index_source_identities()
+
+    @staticmethod
+    def _source_record(data, rownum):
+        return {
+            'tool': data.get('A') or '', 'question': data.get('B') or '',
+            'order': int(float(data.get('C') or 0)), 'excel_row': rownum,
+            'citation': data.get('D') or '', 'url': data.get('E') or 'NR',
+            'doi': data.get('J') or '', 'pmid': data.get('K') or '',
+        }
+
+    def _index_source_identities(self):
+        self.existing_by_identity = {}
+        for key, rn in self.existing.items():
+            d = row_dict(self.data_rows[rn])
+            self.existing_by_identity[(key[0], key[1],
+                source_key(self._source_record(d, rn)))] = rn
+
+    def compact_existing_sources(self):
+        """Safely migrate old occurrence-level workbooks to unique-source rows.
+
+        Never silently discard human judgments or contradictory research values.
+        Merge only consistent populated cells, preserving styles and formulas in
+        every unaffected workbook part. Conflict means abort without saving.
+        """
+        by_question = defaultdict(list)
+        for (tool, question, order), rn in self.existing.items():
+            d = row_dict(self.data_rows[rn])
+            record = self._source_record(d, rn)
+            by_question[(tool, question)].append(
+                (order, rn, source_key(record)))
+        plans = []
+        affected = {}
+        for group, records in by_question.items():
+            records.sort(key=lambda x: (x[0], x[1]))
+            grouped = {}
+            keepers = []
+            for order, rn, identity in records:
+                if identity not in grouped:
+                    grouped[identity] = rn
+                    keepers.append(rn)
+                else:
+                    plans.append((group, grouped[identity], rn))
+            if len(keepers) < len(records):
+                affected[group] = (len(records), keepers)
+        if not plans:
+            self._index_source_identities()
+            return 0
+
+        # Fully validate BEFORE making any change to avoid partial migration.
+        merged = defaultdict(dict)
+        for group, keeper, duplicate in plans:
+            left = row_dict(self.data_rows[keeper])
+            right = row_dict(self.data_rows[duplicate])
+            for colnum in range(13, 71):  # M ... BR (human + proposed green)
+                col = col_name(colnum)
+                current = merged[keeper].get(col, left.get(col, ''))
+                other = right.get(col, '')
+                current_good = current not in ('', 'NR', 'NOT FOUND', 'Not applicable')
+                other_good = other not in ('', 'NR', 'NOT FOUND', 'Not applicable')
+                if current_good and other_good and str(current) != str(other):
+                    raise ValueError(
+                        f'Cannot safely combine duplicate {group[0]}/{group[1]} '
+                        f'Excel rows {keeper} and {duplicate}: conflicting {col} '
+                        f'values. Review those rows in the original workbook, '
+                        'then rerun. Original file remains unchanged.')
+                if not current_good and other_good:
+                    merged[keeper][col] = other
+            for child in self.data_rows[duplicate].findall(S('c')):
+                if col_index(child.get('r')) <= 70 and child.find(S('f')) is not None:
+                    raise ValueError(
+                        f'Cannot clear duplicate Excel row {duplicate} because '
+                        'it contains a formula; inspect original workbook.')
+        # Only after all checks succeed, migrate fields and free duplicates.
+        for keeper, values in merged.items():
+            for col, value in values.items():
+                if row_dict(self.data_rows[keeper]).get(col, '') != value:
+                    set_value(self.data_rows[keeper], col, value)
+        for group, keeper, duplicate in plans:
+            row = self.data_rows[duplicate]
+            for col in list(row_dict(row)):
+                if col_index(col) <= 70:
+                    set_value(row, col, '')
+            self.warnings.append(
+                f'Combined older duplicate source row {duplicate} into '
+                f'row {keeper} for {group[0]}/{group[1]}. '
+                'Human/research fields were preserved if consistent.')
+        for (tool, question), (old_count, keepers) in affected.items():
+            for new_order, rn in enumerate(keepers, 1):
+                row = self.data_rows[rn]
+                if row_dict(row).get('C') != str(new_order):
+                    set_value(row, 'C', new_order)
+                if row_dict(row).get('L') != 'N':
+                    set_value(row, 'L', 'N')
+            # Column J is the agent-managed query citation count. Correct a
+            # historic raw-appearance count only when it matches the old rows.
+            key = f'{tool}-{question}'
+            log = next((x for x in self.log_rows.values()
+                        if row_dict(x).get('A') == key), None)
+            if log is not None:
+                old = row_dict(log).get('J', '')
+                if old in ('', str(old_count)):
+                    set_value(log, 'J', len(keepers))
+                    self.changed.add('Query_Log')
+                elif old != str(len(keepers)):
+                    self.warnings.append(
+                        f'Preserved nonstandard Query_Log J for {key}; '
+                        f'expected unique source count {len(keepers)}')
+        # Rebuild all maps from the now-compacted rows.
+        self.existing = {}
+        for rn, row in sorted(self.data_rows.items()):
+            if rn < 4: continue
+            d = row_dict(row)
+            if d.get('A') and d.get('B') and d.get('C'):
+                key = (d['A'].strip().upper(), d['B'].strip().upper(),
+                       int(float(d['C'])))
+                if key in self.existing:
+                    raise ValueError(f'Legacy workbook row-key collision: {key}')
+                self.existing[key] = rn
+        self.free_rows = [rn for rn in sorted(self.data_rows)
+                          if rn >= 4 and not row_dict(self.data_rows[rn]).get('A')]
+        self.changed.add('Data_Extraction')
+        self._index_source_identities()
+        return len(plans)
 
     def _read_config(self):
         tools = {}
@@ -184,11 +310,25 @@ class TemplateWorkbook:
         return self.free_rows.pop(0)
 
     def upsert_blue(self, citation):
-        key=(citation['tool'],citation['question'],int(citation['order']))
-        rn=self.existing.get(key)
-        if rn is None:
-            rn=self._next_free_row()
-            self.existing[key]=rn
+        tool, question = citation['tool'], citation['question']
+        identity = (tool, question, source_key(citation))
+        rn = self.existing_by_identity.get(identity)
+        if rn is not None:
+            # Reuse the previously reviewed/source-enriched row even when a
+            # new PDF lists its sources in a different order.
+            original = row_dict(self.data_rows[rn])
+            citation['order'] = int(float(original['C']))
+        else:
+            order = int(citation['order'])
+            if (tool, question, order) in self.existing:
+                order = max(
+                    (idx for a, q, idx in self.existing if a == tool and q == question),
+                    default=0) + 1
+                citation['order'] = order
+            rn = self._next_free_row()
+            self.existing[(tool, question, order)] = rn
+            self.existing_by_identity[identity] = rn
+        key = (tool, question, int(citation['order']))
         row=self.data_rows[rn]
         old=row_dict(row)
         fields=[citation['tool'],citation['question'],int(citation['order']),citation.get('citation') or 'NR',
@@ -242,8 +382,10 @@ class TemplateWorkbook:
             return
         data=row_dict(match)
         # User / investigator owns Done?, Date asked, Investigator, and all review metadata.
-        if not data.get('J') and not incomplete:
-            set_value(match,'J',count)
+        if not incomplete and data.get('J') != str(count):
+            # J is the agent's citation-count field; after source
+            # consolidation it reflects unique sources, not appearances.
+            set_value(match, 'J', count)
             self.changed.add('Query_Log')
         if not data.get('K'):
             set_value(match,'K', '; '.join(sorted(set(paths)))[:900])
