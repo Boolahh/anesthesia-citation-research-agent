@@ -152,6 +152,10 @@ def strict_green_values(fields, provenance, eligible):
               source in ('source domain', 'recognized clinical education / society domain',
                          'linked resource provider', 'official public-agency domain',
                          'source category', 'type-based coding',
+                         'independently retrieved publication title',
+                         'official regional clinical protocol PDF (unverified)',
+                         'publisher-hosted edited collection (unverified)',
+                         'ANZCA source PDF frontmatter (unverified)',
                          'AI proposal from retrieved evidence')):
             values[col] = MISSING
         else:
