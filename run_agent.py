@@ -32,9 +32,10 @@ from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 from agent.source_coverage import (geography_candidate_sources, source_access_review,
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
+from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.3.1'
+APP_VERSION = '2.3.2'
 
 
 def write_json(path, payload):
@@ -800,6 +801,8 @@ def main(argv=None):
     write_csv(report_dir/'research_audit.csv', audit, RESEARCH_AUDIT_FIELDS)
     source_level = _source_research_summary(rows, research)
     write_csv(report_dir/'source_level_research.csv', source_level, SOURCE_RESEARCH_FIELDS)
+    citation_census = citation_census_by_question(rows, documents)
+    write_csv(report_dir/'citation_counts_by_question.csv', citation_census, CITATION_CENSUS_FIELDS)
     first_author_sources = geography_candidate_sources(rows, research)
     write_csv(report_dir/'first_author_source_coverage.csv', first_author_sources, GEO_SOURCE_FIELDS)
     access_review = source_access_review(rows, research)
@@ -837,6 +840,12 @@ def main(argv=None):
             for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
         'distinct_sources_within_questions': len(source_level),
+        'distinct_linked_sources_within_questions': sum(
+            row['distinct_linked_source_identities'] for row in citation_census),
+        'distinct_bibliography_sources_within_questions': sum(
+            row['bibliography_distinct_sources'] for row in citation_census),
+        'citation_counting_method': 'every visible source occurrence (including repeats)',
+        'citation_counts_by_question_file': str(report_dir/'citation_counts_by_question.csv'),
         'distinct_sources_researched': sum(p['research_attempts']>0 for p in source_level),
         'distinct_sources_with_green': sum(p['green_written_occurrences']>0 for p in source_level),
         'candidate_publications_with_first_author_country': len(first_author_sources),
