@@ -33,6 +33,37 @@ The 12 standardized questions and 16 platform definitions are read *directly* fr
 
 Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
+## Why 5 cited papers can appear as 50 citation rows
+
+**Citation appearances are not unique publications.** Claude and ChatGPT
+exports may contain links repeated throughout the body *and* bibliography.
+For example, the original Claude postoperative-nausea PDF in the
+investigator's local audit contains **24 linked appearances, 3 distinct
+link identities, and 2 explicitly listed bibliography entries**. The same
+NYSORA link appears 22 times. Different linked URLs may also point to
+the same real publication, so distinct *links* are not confirmed distinct
+papers.
+
+The current study's newer preregistration (page 15) explicitly counts a
+source every time it appears, even if repeated within one response. An
+older section (page 84) uses one citation per distinct source. The app
+**does not silently choose the older rule** or delete source occurrences.
+Instead every run now provides:
+
+- A clear UI display of citation appearances, repeat appearances, and
+  distinct linked source identities, with a question-by-question table.
+- `citation_counts_by_question.csv` in the ZIP, including reference-list
+  entries and unlinked citations. **Do not equate the bibliography count,
+  source-link count, and appearance count.**
+- The full `citations_extracted.json`, `citation_preview.csv`, and
+  `source_level_research.csv` for reviewer reconciliation.
+
+Some ChatGPT PDF exports contain **no clickable citation links**, even
+when the original chat interface displayed sources. A PDF cannot
+reconstruct source URLs it never contained. Re-export the original
+response with visible references and links, or review the original chat
+before finalizing the citation census.
+
 ## What exactly gets written
 
 - **A–L (blue):** the citation as displayed, original link as displayed, original title/author/year/journal/DOI/PMID and whether the reference was repeated. Links in this area are never replaced by a publisher URL found later.
