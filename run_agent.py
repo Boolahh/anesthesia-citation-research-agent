@@ -579,10 +579,10 @@ def _research_audit(rows, proposals):
         if proposed:
             if proposed.get('error'):
                 status = 'lookup_error'
-            elif proposed.get('strict_source_identified') is False:
-                status = 'source_identity_not_retrievable'
             elif (proposed.get('match') or {}).get('status') == 'non_source_search_results':
                 status = 'search_results_link_not_single_publication'
+            elif proposed.get('strict_source_identified') is False:
+                status = 'source_identity_not_retrievable'
             elif not proposed.get('has_metadata'):
                 status = 'metadata_unavailable'
             elif not proposed.get('can_autowrite', False):
