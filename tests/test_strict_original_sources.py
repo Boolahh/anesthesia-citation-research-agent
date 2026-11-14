@@ -6,13 +6,14 @@ authenticate any clinical source or substitute for investigator review.
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from agent.strict_sources import (
     reliable_original_identity, strict_green_values, MISSING,
 )
 from agent.workbook import TemplateWorkbook, GREEN_COLS
 from agent.pdf_extract import parse_pdf
+from agent.research import Bibliography
 import fitz
 from run_agent import enrich, research_candidate
 
@@ -175,6 +176,24 @@ class StrictGreenFieldTests(TestCase):
         self.assertEqual(result['fields']['AN'],'NOT FOUND')
         self.assertIn('original citation and url',
                       ' '.join(result['review_flags']).lower())
+
+    def test_strict_research_does_not_even_query_title_similarity_services(self):
+        with TemporaryDirectory() as tmp:
+            engine = Bibliography({}, Path(tmp), offline=True,
+                                  allow_title_search=False)
+            original = {
+                'url':'https://example.org/clinical-summary',
+                'title':'Unverified clinical overview of an anesthetic intervention',
+                'citation':'Unverified clinical overview of an anesthetic intervention',
+                'doi':'NR','pmid':'NR',
+            }
+            with patch.object(engine, 'fetch_json', return_value=None) as api, \
+                 patch.object(engine, 'public_page', return_value=None):
+                record=engine.metadata(original)
+            api.assert_not_called()
+            self.assertIsNone(record['crossref'])
+            self.assertIsNone(record['pubmed'])
+            self.assertIsNone(record['openalex'])
 
     def test_unlinked_long_title_is_not_automatically_searched(self):
         wb=TemplateWorkbook(TEMPLATE)
