@@ -376,13 +376,41 @@ class TemplateWorkbook:
             if col == 'BE' and val in ('NR','NOT FOUND','Not applicable'):val=''
             if val is None:val='NOT FOUND' if col!='BE' else ''
             previous=old.get(col,'')
-            if previous and str(previous)!=str(val):
-                self.warnings.append(f'Preserved existing human/AI-edited {col}{rownum}; conflicting proposal')
-                continue
-            if not previous and val!='':
+            empty_values = ('', 'NR', 'NOT FOUND')
+            # The strict pipeline marks unresolved information NOT FOUND.
+            # A later verified bibliographic record must be able to replace
+            # this placeholder; substantive reviewer edits remain protected.
+            if previous in empty_values and val not in empty_values:
                 set_value(row,col,val)
                 written=True
+            elif previous not in empty_values and str(previous)!=str(val):
+                if val not in empty_values:
+                    self.warnings.append(
+                        f'Preserved existing human/AI-edited {col}{rownum}; conflicting proposal')
+            elif previous == '' and val in ('NR', 'NOT FOUND'):
+                set_value(row,col,'NOT FOUND')
+                written=True
         if written:self.changed.add('Data_Extraction')
+        return written
+
+    def mark_unretrievable(self, rownum):
+        """Mark missing research cells without overwriting user or agent data.
+
+        Missing information is not a hallucination verdict. The source and its
+        original hyperlink stay in blue D/E, and reviewer decisions remain
+        under investigator control. Use the workbook-supported NOT FOUND.
+        """
+        row = self.data_rows[rownum]
+        previous = row_dict(row)
+        written = False
+        for col in GREEN_COLS:
+            if col == 'BE':  # licensed JCR impact factor intentionally blank
+                continue
+            if previous.get(col, '') in ('', 'NR'):
+                set_value(row, col, 'NOT FOUND')
+                written = True
+        if written:
+            self.changed.add('Data_Extraction')
         return written
 
     def update_query_log(self, tool, question, count, paths, incomplete=False):
