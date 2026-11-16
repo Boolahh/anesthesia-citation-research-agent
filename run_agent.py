@@ -125,6 +125,7 @@ def gather(args, workbook, ai):
     if not paths:
         raise RuntimeError('No PDF files found. Upload PDFs for blue/all; for research-only, use a reviewed workbook.')
     collected, warnings, documents, known_hashes = [], [], [], {}
+    copilot_question_files = {}
     for path in paths:
         tool = file_tool(path, workbook.data.tool_names, args.tool, root)
         if not tool:
@@ -166,6 +167,17 @@ def gather(args, workbook, ai):
                               'citations': 0, 'with_urls': 0, 'pdf_sha256': digest,
                               'warnings': issues+[zero_message], 'pdf_diagnostics': diagnostic})
         for question, rows in per_question.items():
+            if tool == 'COP':
+                previous = copilot_question_files.get(question)
+                if previous and previous != path.name:
+                    raise ValueError(
+                        f'Multiple DIFFERENT Copilot responses assigned to {question}: '
+                        f'{previous!r} and {path.name!r}. Refusing to merge '
+                        'distinct answers into one study question. Choose a '
+                        'single complete response, or consolidate pages from '
+                        'that ONE response into a single PDF before rerunning.'
+                    )
+                copilot_question_files[question] = path.name
             documents.append({'file': path.name, 'tool': tool, 'question': question,
                               'citations': len(rows), 'with_urls': sum(x['url'] != 'NR' for x in rows),
                               'pdf_sha256': digest, 'warnings': issues})
@@ -899,7 +911,13 @@ def main(argv=None):
         'elapsed_seconds': round(time.monotonic() - run_started, 2),
         'extraction_seconds': extraction_seconds,
         'research_seconds': research_seconds,
-        'input_documents': documents, 'citations_extracted': len(rows),
+        'input_documents': documents,
+        'copilot_viewport_exports_incomplete': sum(
+            doc.get('tool') == 'COP' and
+            any('Copilot browser viewport PDF' in message
+                for message in doc.get('warnings') or [])
+            for doc in documents),
+        'citations_extracted': len(rows),
         'unique_source_rows_added_or_revisited': len(rows),
         'total_unique_source_rows_in_workbook': len(wb.existing),
         'citation_appearances_extracted': len(appearances),
