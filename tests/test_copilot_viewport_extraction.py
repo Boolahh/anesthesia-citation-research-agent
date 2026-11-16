@@ -41,8 +41,8 @@ def synthetic_copilot_viewport(path, badge_labels=(), real_url=''):
                 'https://copilot.com/library/all',
                 'https://copilot.com/projects',
                 'https://copilot.com/chat/all',
-                'https://copilot.com/chat/conversation/abc-def-123?fromcode=test',
-            ]):
+            ] + [f'https://copilot.com/chat/conversation/synthetic-{idx}?fromcode=test'
+                 for idx in range(13)]):
             page.insert_link({'kind':fitz.LINK_URI,
                               'from':fitz.Rect(35,130+i*27,59,154+i*27),
                               'uri':url})
@@ -68,7 +68,7 @@ class CopilotNavigationTests(TestCase):
             ])
             with fitz.open(p) as doc:
                 self.assertTrue(is_viewport_print(list(doc)))
-                self.assertEqual(len(doc[0].get_links()), 6)
+                self.assertEqual(len(doc[0].get_links()), 18)
             rows, warnings = parse_pdf(p, 'COP', {'Q01':'PONV prevention'})
         self.assertEqual(len(rows), 4)
         self.assertEqual([r['citation'] for r in rows],
@@ -78,7 +78,7 @@ class CopilotNavigationTests(TestCase):
         self.assertTrue(all(r['authors'] == 'NR' for r in rows))
         self.assertTrue(all(r['extraction_confidence'] == 'review' for r in rows))
         self.assertTrue(all(r['source_context'] == 'inline_badge_unlinked' for r in rows))
-        self.assertTrue(any('excluded 6 sidebar' in warning for warning in warnings))
+        self.assertTrue(any('excluded 18 sidebar' in warning for warning in warnings))
         self.assertTrue(any('Collapsed Copilot +N' in warning for warning in warnings))
         self.assertTrue(any('viewport' in warning for warning in warnings))
 
