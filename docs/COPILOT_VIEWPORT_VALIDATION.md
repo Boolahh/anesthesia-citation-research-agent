@@ -28,7 +28,7 @@ in the left navigation bar, not the answer. The content area instead had
 small grey **non-clickable** badges such as `lww +1`, `bmj`, `nih`,
 `bjaed`, and `wfsahq`. A total of **46 visible badge appearances**
 were manually audited by deterministic PDF text/span geometry. These are
-**not 45 verified unique publications**; duplicates, truncation and
+**not 46 verified unique publications**; duplicates, truncation and
 collapsed `+1` source groups cannot be resolved without the actual URLs.
 
 Q06 is duplicated across two *different* PDFs, and the last Q12 PDF
