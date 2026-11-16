@@ -33,48 +33,62 @@ The 12 standardized questions and 16 platform definitions are read *directly* fr
 
 Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
-## Critical Copilot / Edge browser-print limitation (v2.4.2)
+## Critical Copilot / Edge browser-print limitation (v2.4.3)
 
-A real 13-PDF Copilot pilot exposed a severe print-export pitfall.
-**Edge browser screen print can preserve 18 clickable Copilot sidebar/chat
-navigation links while losing ALL medical source link destinations.** The old
-v2.4.1 parser incorrectly counted these navigation links as 216 research
-citations. Such a workbook must not be used for research or carried into a
-cumulative master spreadsheet.
+**Copilot PDF exports are NOT guaranteed to preserve original source URLs.**
+Two separate real-PDF audits exposed different Copilot layouts:
 
-The corrected parser removes known Copilot UI links (`copilot.com/chat`,
-`/search`, `/library`, `/projects`, and conversation-history routes).
-If the PDF has an identifiable Copilot viewport format, it copies **only
-visible small source-badge labels**, such as `bmj`, `lww +1` or `bjaed`,
-into blue D. If the badge's actual original source URL was not embedded in
-the PDF, blue E stays `NR` and missing green research values are
-`NOT FOUND`. The `+1` indicates a collapsed group of unseen sources,
-which the agent **does not invent, count or expand**. Repeated generic
-labels without an original source URL cannot safely be assumed to be
-the same article.
+- **Older sidebar-only viewport:** 13 one-page PDFs included 18 clickable
+  Copilot navigation links per file but no clickable medical sources. The
+  older agent misidentified these as **216 fake citation rows**. Version 2.4.2
+  began excluding them; v2.4.3 keeps that protection.
+- **Newer Sources-drawer viewport:** 13 one-page PDFs included **20**
+  clickable Copilot chat/navigation links per file, **zero** scholarly-source
+  URLs, and a visible right-hand **Sources → Citations** list. There are
+  **55 explicitly listed entries across those 13 PDFs**, which represent 12
+  study questions because Q06 was uploaded twice. The older generic parser
+  mistakenly reported 47–106 citation candidates per PDF.
 
-**For a usable full study export:**
+Version 2.4.3 **uses only the entries explicitly displayed between
+"Sources → Citations" and "More"** for this newer PDF layout. It excludes
+"More" (related recommendations, NOT necessarily citations), ordinary
+advice text, Copilot chat history and navigation links. It preserves the
+**literal displayed title and domain** in blue D. Original blue E is
+`NR` when the real article hyperlink is missing; the agent never
+constructs one from the domain. Incomplete titles with ellipses are never
+expanded into guessed publication names. Missing green research metadata
+becomes `NOT FOUND`. Two separately listed entries whose titles are
+truncated to the same text are **not silently assumed identical**.
 
-1. Open the *entire* original Copilot answer in Edge. Scroll through to the
-   end and explicitly expand all citation/source groups (`+1`, etc.).
-2. Capture each original cited source's full **actual hyperlink** from
-   Copilot's citation interface. Do not replace it with a paper you find
-   separately; that would corrupt the as-cited evidence.
-3. Create one complete text-selectable PDF per prompt containing the entire
-   answer plus all actually cited references/URLs. Pasting into a document
-   and saving as PDF is fine **only after confirming that the hyperlinks
-   survive**. Printing the visible chat viewport directly is NOT enough.
-4. Use exactly **one answer PDF per AI model/question**. If you upload two
-   different Copilot answers for Q06, the app now stops rather than mixing
-   them. Prefer files named `Q01_COP.pdf` through `Q12_COP.pdf`.
-5. First run **Copy original citations (blue)** and compare extracted labels
-   and URLs against the original. Only then run green research. The
-   missing-source warnings are not evidence of zero citations.
+For older Copilot exports without an explicit Citations panel, only clearly
+visible small inline source badges are retained, still without inventing
+hidden `+N` links. Neither PDF format proves a complete reference census
+without the full original source links.
 
-The app rejects master workbooks containing these known fake Copilot
-navigation rows, instead of silently contaminating later AI-platform runs.
-Use a clean original template and re-import correct exports. See
-`docs/COPILOT_VIEWPORT_VALIDATION.md` for the real-PDF evidence.
+**To obtain study-grade Copilot results:**
+
+1. Open the original complete Copilot answer. Click **Sources** and identify
+   the entries under **Citations**; do not include suggestions under **More**.
+2. Expand `+1` / collapsed citation badges. For **each actually cited source**,
+   copy its full original publication URL directly from Copilot. Do not
+   substitute an article found elsewhere just because the title seems similar.
+3. Export the **entire** AI answer and full cited-reference list with their
+   actual URLs (one answer per question) to a searchable PDF. Verify a
+   publication hyperlink survives by opening it from the PDF.
+4. Upload exactly **one PDF per question Q01–Q12**. In the existing test,
+   `Managing Hypoxemia During One-Lung Ventilation.pdf` and
+   `Preventing Hypoxemia During One-Lung Ventilation.pdf` are different
+   Q06 answers. Choose ONE; the agent now refuses duplicate Q06 files
+   before attempting the long extraction pass.
+5. First run **Copy original citations (blue)** and compare each citation
+   and URL to the original Copilot list. Once accurate, run **Copy + research
+   publications (green)** with the strict provisional policy and unlimited
+   lookups. If original links remain absent, green facts cannot be filled.
+
+**Never reuse an old workbook containing false Copilot navigation rows.**
+Start from the blank original study template. See
+`docs/COPILOT_VIEWPORT_VALIDATION.md` for the original audit and the
+follow-up Sources-panel audit.
 
 ## One Excel row per source per question (v2.4.0)
 

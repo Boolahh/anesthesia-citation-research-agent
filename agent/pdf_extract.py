@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from agent.deepseek_numbered import extract_deepseek_numbered, looks_like_numbered_link_export
-from agent.copilot_export import is_sidebar_link, is_viewport_print, visible_unlinked_badges
+from agent.copilot_export import (is_sidebar_link, is_viewport_print,
+                                  visible_unlinked_badges, cited_sources_panel)
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
 import re
 
-import fitz
+import pymupdf as fitz
 
 DOI_RE = re.compile(r'10\.\d{4,9}/[-._;()/:A-Za-z0-9]+', re.I)
 PMID_RE = re.compile(r'\bPMID\s*[:#]?\s*(\d{6,9})\b', re.I)
@@ -434,50 +435,85 @@ def _parse_pages(pages, tool, question, path, api=None):
     generic_numbered = (not deepseek_format and tool not in ('CGP', 'CLG')
                         and not copilot_viewport
                         and looks_like_numbered_link_export(pages))
-    if deepseek_format or generic_numbered:
-        annotations, deepseek_warnings = extract_deepseek_numbered(pages)
-        warnings.extend(deepseek_warnings)
-        if generic_numbered:
-            warnings.append(
-                'Unvalidated numbered-link export detected for ' + tool +
-                '; verify every citation marker and URL before study use')
-        # Fallback is for exports not matching this numbered-link layout.
-        if not annotations:
-            annotations = extract_links(pages)
-        references = []
-    else:
-        annotations = extract_links(pages)
-        references = _plain_references(pages)
-    # Include uncaptured references, but never add the same entry once more
-    # simply because its URL appears as visible text and as PDF annotation.
-    found = list(annotations)
     if copilot_viewport:
-        badges = visible_unlinked_badges(pages)
-        ignored = sum(is_sidebar_link(link.get('uri') or '')
-                      for p in pages for link in p.get_links())
-        warnings.append(
-            f'Copilot browser viewport PDF: excluded {ignored} sidebar/chat '
-            'navigation links (NOT cited medical sources)'
+        # The browser printout is NOT a conventional bibliography. Its
+        # "Sources > Citations" panel lists actually cited references; the
+        # "More" list, left chat history and body advice are not citations.
+        # This branch must bypass _plain_references() and generic links:
+        # they previously produced dozens of invented candidate rows.
+        references = []
+        panel = cited_sources_panel(pages)
+        if panel is not None:
+            # New Edge layout: only the explicit Citations-panel listings.
+            # Never add plain body links or the separate More suggestions.
+            annotations = []
+            found = panel
+        else:
+            # Older Copilot printouts have no right-hand citation list, but
+            # sometimes preserve a REAL medical link in the answer. Keep
+            # those links via extract_links(), which excludes Copilot app UI,
+            # and add only visible unlinked badges that do not overlap links.
+            annotations = extract_links(pages)
+            found = list(annotations) + visible_unlinked_badges(pages)
+        excluded = sum(
+            is_sidebar_link(link.get('uri') or '')
+            for page in pages for link in page.get_links()
         )
-        if badges:
+        warnings.append(
+            f'Copilot browser viewport PDF: excluded {excluded} '
+            'sidebar/chat navigation links (NOT cited medical sources)'
+        )
+        if panel is not None:
             warnings.append(
-                f'Preserved {len(badges)} explicitly visible Copilot source '
-                'badge occurrence(s), but their destination URLs were NOT '
-                'saved in the PDF; kept as-cited labels with URL NR and '
-                'research fields NOT FOUND'
+                f'Copilot Sources > Citations panel: {len(panel)} visibly '
+                'listed citation entry/entries recovered. Sources > More '
+                'and body-text advice explicitly excluded.'
             )
-        if any(re.search(r'\+\d{1,2}$', b['citation']) for b in badges):
+            missing_urls = sum(not row.get('url') for row in panel)
+            if missing_urls:
+                warnings.append(
+                    f'{missing_urls} source-panel citation entries have NO '
+                    'original publication URL in this PDF. Retain the exact '
+                    'displayed source title and domain in blue; URL NR and '
+                    'missing green publication facts NOT FOUND. Truncated '
+                    'source titles must not be expanded or web-guessed.'
+                )
+        elif found:
             warnings.append(
-                'Collapsed Copilot +N source badges indicate unseen extra '
-                'references. Do not count or invent those unexpanded sources; '
-                'open the original source list and capture actual URLs.'
+                f'No Sources > Citations panel captured: preserved '
+                f'{len(found)} visible inline citation badge occurrence(s), '
+                'with real embedded source links preserved where present. '
+                'Unlinked badge source URLs were NOT saved in this PDF; '
+                'never infer scholarly publications from badge labels.'
+            )
+        if any(re.search(r'\+\d{1,2}$', b['citation'])
+               for b in (visible_unlinked_badges(pages) if panel is not None
+                         else found)):
+            warnings.append(
+                'Collapsed Copilot +N badge(s) were visible; their hidden '
+                'sources cannot be counted or invented from this printout.'
             )
         warnings.append(
-            'This is a one-page/screen-viewport Copilot print capture, not '
-            'proof that the whole response or all source citations are present. '
-            'Export the complete answer with original clickable source URLs.'
+            'The PDF may not include the entire Copilot conversation or '
+            'the complete citation list. Verify the full original cited '
+            'source URLs manually before study-grade publication research.'
         )
-        found.extend(badges)
+    else:
+        if deepseek_format or generic_numbered:
+            annotations, deepseek_warnings = extract_deepseek_numbered(pages)
+            warnings.extend(deepseek_warnings)
+            if generic_numbered:
+                warnings.append(
+                    'Unvalidated numbered-link export detected for ' + tool +
+                    '; verify every citation marker and URL before study use')
+            if not annotations:
+                annotations = extract_links(pages)
+            references = []
+        else:
+            annotations = extract_links(pages)
+            references = _plain_references(pages)
+        # Include uncaptured references only for conventional PDF exports.
+        found = list(annotations)
     for ref in references:
         matches = [a for a in annotations if _matches_reference(a, ref)]
         if matches:
@@ -531,6 +567,15 @@ def _parse_pages(pages, tool, question, path, api=None):
         if entry.get('kind') == 'copilot_visible_unlinked_badge':
             # The badge states no author/year/DOI/PMID. Never derive facts
             # from a shortened hostname or '+1' marker.
+            info['authors'] = info['year'] = info['journal'] = 'NR'
+            info['doi'] = info['pmid'] = 'NR'
+        if entry.get('kind') == 'copilot_cited_source_panel':
+            # Strictly as displayed: complete visible title may be copied to
+            # the original blue title, but any clipped ellipsis is NOT a
+            # retrievable publication title. Domain != source hyperlink.
+            ev = entry.get('evidence') or {}
+            info['title'] = ('NR' if ev.get('title_is_truncated')
+                             else ev.get('visible_title') or 'NR')
             info['authors'] = info['year'] = info['journal'] = 'NR'
             info['doi'] = info['pmid'] = 'NR'
         identity = citation_identity({**info, 'url': url})

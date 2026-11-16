@@ -7,7 +7,7 @@ Do not treat the "Found N web pages" indicator as N citations.
 from collections import defaultdict
 import re
 
-import fitz
+import pymupdf as fitz
 
 NUMBER = re.compile(r'\d{1,3}')
 FOUND = re.compile(r'Found\s+(\d+)\s+web\s+pages', re.I)

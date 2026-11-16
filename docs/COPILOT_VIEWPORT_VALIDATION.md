@@ -75,3 +75,43 @@ a complete, defensible 12-question Copilot bibliography.
 **Limitation:** Synthetic CI tests validate the parser and workbook
 guards. The investigator's private original corpus must be rerun locally
 against the merged version for final real-data acceptance.
+
+
+## Second Copilot test: expanded Sources panel, but still no publication URLs
+
+The investigator re-exported **13 one-page full-screen Edge PDFs** with
+Copilot's right-hand `Sources` drawer open. These files are different
+from the earlier viewport prints. Deterministic PyMuPDF inspection of the
+actual PDF text blocks and URI annotations found:
+
+| Finding | Actual value |
+|---|---:|
+| New PDFs | 13 |
+| Copilot chat/navigation links *per PDF* | 20 |
+| Original medical-source links *per PDF* | **0** |
+| Items explicitly listed under **Citations** across all PDFs | **55** |
+| Question/model combinations represented | 12 |
+| Two different files mapped to the same question | Q06 |
+| LAST (Q04) visibly listed cited entries | **7**, not 106 |
+| PONV (Q01) visibly listed cited entries | **4** |
+| Unresolved original source URLs | All 55 |
+
+Every PDF had entries under the `Citations` heading. Most also had
+a separate `More` section containing additional suggested articles.
+**The More entries must not be treated as citations.** Some printed
+citation titles are truncated with ellipses; these are not sufficient
+to identify the linked article, even if the source domain is visible.
+Duplicated truncated titles are not automatically merged because distinct
+real publications may share the same visible prefix.
+
+**Acceptance rule for v2.4.3:** For this exact format, use the right
+`Sources → Citations` entries only. Keep the title and domain as displayed,
+URL `NR`, and other unavailable research data `NOT FOUND`. Ignore
+the additional `More` suggestions and all 20 Copilot navigation links.
+Reject two Q06 responses before a long batch run. No invented bibliographic
+URLs, DOI, author, country, publication title or year.
+
+Because a source domain is *not a source URL*, even the corrected strict
+parser cannot populate green publication facts from these 13 PDFs alone.
+The original clickable source link must be copied from Copilot's live
+citation panel and preserved in the export.

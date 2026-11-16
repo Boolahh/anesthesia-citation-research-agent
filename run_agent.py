@@ -27,7 +27,8 @@ except ImportError:
 
 from agent.workbook import TemplateWorkbook, GREEN_COLS
 from agent.pdf_extract import (parse_pdf, inspect_unresolved_pdf,
-                               citation_identity, weak_visible_citation_label)
+                               citation_identity, weak_visible_citation_label,
+                               heuristic_question)
 from agent.research import Bibliography, quality
 from agent.journal_evidence import load_journal_evidence, supplement_journal_fields
 from agent.source_coverage import (geography_candidate_sources, source_access_review,
@@ -38,7 +39,7 @@ from agent.copilot_export import is_sidebar_link
 from agent.strict_sources import reliable_original_identity, strict_green_values
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.4.2'
+APP_VERSION = '2.4.3'
 
 
 def write_json(path, payload):
@@ -124,6 +125,24 @@ def gather(args, workbook, ai):
         paths = paths[:args.max_docs]
     if not paths:
         raise RuntimeError('No PDF files found. Upload PDFs for blue/all; for research-only, use a reviewed workbook.')
+    # Fail fast on obvious duplicate Copilot answers from filenames. This is
+    # a preflight; the question mapping below independently catches ambiguous
+    # or differently named PDFs before workbook writing.
+    preliminary = {}
+    for pdf_path in paths:
+        if file_tool(pdf_path, workbook.data.tool_names, args.tool, root) != 'COP':
+            continue
+        question_hint = heuristic_question(pdf_path.stem, [])
+        if not question_hint:
+            continue
+        previous = preliminary.get(question_hint)
+        if previous and previous != pdf_path.name:
+            raise ValueError(
+                f'Multiple DIFFERENT Copilot responses assigned to {question_hint}: '
+                f'{previous!r} and {pdf_path.name!r}. Select exactly ONE '
+                'response per study question and rerun. No workbook was written.'
+            )
+        preliminary[question_hint] = pdf_path.name
     collected, warnings, documents, known_hashes = [], [], [], {}
     copilot_question_files = {}
     for path in paths:
