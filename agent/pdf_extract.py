@@ -461,183 +461,7 @@ def _parse_pages(pages, tool, question, path, api=None):
                 'saved in the PDF; kept as-cited labels with URL NR and '
                 'research fields NOT FOUND'
             )
-        if any(re.search(r'\+\d{1,2}
-        matches = [a for a in annotations if _matches_reference(a, ref)]
-        if matches:
-            # Never replace a high-confidence single link label with a plain-
-            # text block that spans *multiple* different linked references.
-            # This happens when HTML-to-PDF places consecutive references on
-            # neighboring baselines without numbering or blank lines.
-            best = matches[0]
-            ref_label = normalize(ref['citation'])
-            other_sources = [a for a in annotations if a is not best
-                             and a['page'] == ref['page']
-                             and len(normalize(a['citation'])) >= 22
-                             and normalize(a['citation']) in ref_label]
-            if (not other_sources and len(ref['citation']) > len(best['citation'])
-                    and len(ref['citation']) < 600):
-                best['citation'] = ref['citation']
-            if not best.get('url') and ref.get('url'):
-                best['url'] = ref['url']
-            if best.get('evidence') is not None:
-                best['evidence']['section'] = 'bibliography'
-            continue
-        found.append(ref)
-    found.sort(key=lambda x: (x['page'], x['y'], x['x']))
-    # Never manufacture citation rows from a narrative mention of a clinical
-    # organization or guideline. Only explicit source links or bibliography
-    # entries in the original PDF qualify for the workbook.
-    text = '\n'.join(p.get_text(sort=True) for p in pages)
-    text_n = normalize(text)
-    collapsed = re.findall(r'(?<!\w)\+\s*\d{1,3}(?!\w)', text)
-    if collapsed:
-        warnings.append(f'Collapsed +N source labels ({len(collapsed)}) found; expand hidden citations before finalizing')
-    if not text_n and not found:
-        warnings.append('PDF has no selectable text or URI links; OCR/manual export is required')
-    # Optional AI extraction is not permitted to add citations beyond
-    # the original PDF link/explicit reference evidence. This prevents
-    # paraphrased prose from becoming an invented source row.
-    if not found:
-        warnings.append('No explicit citations recoverable; confirm original conversation and export format')
-    if not any(g.get('url') for g in found):
-        warnings.append('No clickable URLs found; no recoverable visible source URLs; review original export')
-    results = []
-    seen = set()
-    for n, entry in enumerate(found, 1):
-        raw = flatten_text(entry.get('citation', ''))
-        url = entry.get('url') or 'NR'
-        info = rough_fields(raw, url)
-        if entry.get('kind') in ('deepseek_numbered_link',
-                                 'copilot_visible_unlinked_badge'):
-            # A number/domain badge is not an article title.
-            info['title'] = 'NR'
-        if entry.get('kind') == 'copilot_visible_unlinked_badge':
-            # The badge states no author/year/DOI/PMID. Never derive facts
-            # from a shortened hostname or '+1' marker.
-            info['authors'] = info['year'] = info['journal'] = 'NR'
-            info['doi'] = info['pmid'] = 'NR'
-        identity = citation_identity({**info, 'url': url})
-        repeated = 'Y' if identity in seen else 'N'
-        seen.add(identity)
-        results.append({'tool': tool, 'question': question, 'order': n,
-                        'url': url, 'repeat': repeated, **info,
-                        'source_file': path.name, 'source_page': entry.get('page', 0),
-                        'extraction_method': entry.get('kind', 'unknown'),
-                        'extraction_confidence': entry.get('confidence', 'review'),
-                        'source_context': (entry.get('evidence') or {}).get(
-                            'section', 'named_source_mention' if entry.get('kind') == 'explicit_named'
-                            else 'unclassified'),
-                        'evidence': entry.get('evidence') or {'page': entry.get('page', 0)}})
-    return results, warnings
-
-
-def _question_matches(text, questions):
-    normalized = normalize(text)
-    return [key for key, q in questions.items() if normalize(q) in normalized or (
-        len(normalize(q)) > 60 and normalize(q)[:65] in normalized)]
-
-
-QUESTION_HINTS = {
-    'Q01': ('ponv', 'postoperative nausea', 'nausea vomiting'),
-    'Q02': ('intraoperative hypotension', 'prevent hypotension', 'blood pressure management'),
-    'Q03': ('intraoperative hemorrhage', 'intraoperative haemorrhage', 'massive hemorrhage', 'massive haemorrhage'),
-    'Q04': ('last toxicity', 'local anesthetic systemic toxicity', 'local anaesthetic systemic toxicity'),
-    'Q05': ('difficult airway', 'awake tracheal intubation'),
-    'Q06': ('one lung ventilation', 'one-lung ventilation', 'olv hypoxemia', 'olv hypoxaemia'),
-    'Q07': ('cesarean anesthesia', 'caesarean anaesthesia', 'cesarean delivery'),
-    'Q08': ('acute kidney injury', 'aki risk', 'kidney injury prevention', 'kidney injury risk'),
-    'Q09': ('postoperative delirium', 'delirium risk'),
-    'Q10': ('tonsillectomy', 'recent upper respiratory infection', 'urti'),
-    'Q11': ('cabg', 'coronary artery bypass', 'volatile vs tiva', 'volatile anesthesia comparison'),
-    'Q12': ('intracranial pressure', 'craniotomy', 'elevated icp', 'raised icp'),
-}
-
-
-def heuristic_question(filename, pages):
-    # Filename is a stronger signal than narrative content, which can mention
-    # other anesthetic subspecialties incidentally. Require one unambiguous hit.
-    for sample in (filename, ' '.join(p.get_text(sort=True)[:650] for p in pages[:1])):
-        tokenized = re.sub(r'[^a-z0-9]+', ' ', sample.lower()).strip()
-        matches = [code for code, hints in QUESTION_HINTS.items()
-                   if any(re.sub(r'[^a-z0-9]+', ' ', hint.lower()).strip() in tokenized for hint in hints)]
-        if len(matches) == 1:
-            return matches[0]
-    return None
-
-
-def get_question_for_file(pages, questions, filename):
-    matches = _question_matches(' '.join(p.get_text() for p in pages[:2]), questions)
-    m = re.search(r'(?i)(?:^|[_\s\-.])Q\s*0?([1-9]|1[0-2])(?:[^0-9]|$)', filename)
-    if m:
-        key = f'Q{int(m.group(1)):02d}'
-        return key, (['Filename question differs from visible question; review mapping'] if matches and key not in matches else [])
-    if len(matches) == 1:
-        return matches[0], []
-    if len(matches) > 1:
-        return None, [f'Multiple questions detected {matches}; name file Q01_*.pdf or split exports']
-    fallback = heuristic_question(filename, pages)
-    if fallback:
-        return fallback, [f'Question {fallback} inferred from filename/heading keywords; confirm against actual study prompt']
-    return None, ['Cannot identify one of the 12 study questions; name file Q01_*.pdf, etc.']
-
-
-def inspect_unresolved_pdf(path):
-    """Context-only diagnostics for PDFs yielding no citation candidates.
-
-    Never copy clinical text to logs. Filename topic mapping is only a hint:
-    identifying a question is NOT evidence that the AI supplied a citation.
-    """
-    filename = Path(path).stem
-    with fitz.open(str(path)) as document:
-        pages = len(document)
-        text_chars = 0
-        uri_links = 0
-        image_pages = 0
-        for page in document:
-            text_chars += len(page.get_text('text'))
-            uri_links += sum(bool((link.get('uri') or '').lower().startswith(
-                ('https://', 'http://'))) for link in page.get_links())
-            image_pages += bool(page.get_images(full=False))
-        return {
-            'page_count': pages,
-            'selectable_text_characters': text_chars,
-            'uri_link_annotations': uri_links,
-            'pages_containing_images': image_pages,
-            'possible_image_only_export': bool(
-                pages and text_chars < 25 and image_pages > 0),
-            'question_inferred_from_filename': heuristic_question(filename, []),
-        }
-
-
-def parse_pdf(path, tool, questions, api=None):
-    path = Path(path)
-    with fitz.open(str(path)) as doc:
-        if len(doc) == 0:
-            return [], ['Empty PDF']
-        if len(doc) > 500:
-            return [], ['PDF exceeds 500-page safety limit; split exports']
-        pages = list(doc)
-        changes = []
-        for i, page in enumerate(pages):
-            hits = _question_matches(page.get_text(sort=True)[:1600], questions)
-            if len(hits) == 1 and (not changes or hits[0] != changes[-1][1]):
-                changes.append((i, hits[0]))
-        if len(changes) > 1:
-            results, warnings = [], []
-            for i, (start, question) in enumerate(changes):
-                end = changes[i+1][0] if i+1 < len(changes) else len(pages)
-                group, w = _parse_pages(pages[start:end], tool, question, path, api)
-                results.extend(group)
-                warnings.extend(f'{question}: {msg}' for msg in w)
-            if changes[0][0] > 0:
-                warnings.append('Pages before the first question were not attributed')
-            return results, warnings
-        question, warnings = get_question_for_file(pages, questions, path.stem)
-        if not question:
-            return [], warnings
-        return_rows, extra = _parse_pages(pages, tool, question, path, api)
-        return return_rows, warnings+extra
-, b['citation']) for b in badges):
+        if any(re.search(r'\+\d{1,2}$', b['citation']) for b in badges):
             warnings.append(
                 'Collapsed Copilot +N source badges indicate unseen extra '
                 'references. Do not count or invent those unexpanded sources; '
@@ -695,9 +519,15 @@ def parse_pdf(path, tool, questions, api=None):
         raw = flatten_text(entry.get('citation', ''))
         url = entry.get('url') or 'NR'
         info = rough_fields(raw, url)
-        if entry.get('kind') == 'deepseek_numbered_link':
-            # A number is an as-cited marker, never an article title.
+        if entry.get('kind') in ('deepseek_numbered_link',
+                                 'copilot_visible_unlinked_badge'):
+            # A number/domain badge is not an article title.
             info['title'] = 'NR'
+        if entry.get('kind') == 'copilot_visible_unlinked_badge':
+            # The badge states no author/year/DOI/PMID. Never derive facts
+            # from a shortened hostname or '+1' marker.
+            info['authors'] = info['year'] = info['journal'] = 'NR'
+            info['doi'] = info['pmid'] = 'NR'
         identity = citation_identity({**info, 'url': url})
         repeated = 'Y' if identity in seen else 'N'
         seen.add(identity)
