@@ -15,7 +15,7 @@ from agent.copilot_export import is_sidebar_link, is_viewport_print, visible_unl
 from agent.pdf_extract import parse_pdf
 from agent.source_dedup import unique_question_sources
 from agent.workbook import TemplateWorkbook
-from run_agent import gather
+from run_agent import gather, reject_contaminated_copilot_workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +112,25 @@ class CopilotViewportSafetyTests(TestCase):
             args=SimpleNamespace(input=str(path),max_docs=0,tool='COP')
             with self.assertRaisesRegex(ValueError,'Multiple DIFFERENT Copilot responses'):
                 gather(args,workbook,None)
+
+    def test_prior_contaminated_copilot_excel_cannot_be_reused(self):
+        wb=TemplateWorkbook(TEMPLATE)
+        c={'tool':'COP','question':'Q01','order':1,'citation':'Projects',
+           'url':'https://copilot.com/projects?fromcode=abc',
+           'title':'NR','authors':'NR','year':'NR','journal':'NR',
+           'doi':'NR','pmid':'NR','repeat':'N'}
+        wb.upsert_blue(c)
+        with self.assertRaisesRegex(ValueError,'invalid Copilot UI/sidebar'):
+            reject_contaminated_copilot_workbook(wb)
+
+    def test_original_medical_source_in_copilot_excel_is_not_rejected(self):
+        wb=TemplateWorkbook(TEMPLATE)
+        c={'tool':'COP','question':'Q01','order':1,'citation':'nih',
+           'url':'https://pubmed.ncbi.nlm.nih.gov/12345678/',
+           'title':'NR','authors':'NR','year':'NR','journal':'NR',
+           'doi':'NR','pmid':'NR','repeat':'N'}
+        wb.upsert_blue(c)
+        self.assertIsNone(reject_contaminated_copilot_workbook(wb))
 
     def test_copilot_nav_never_removed_from_non_viewport_official_source(self):
         self.assertFalse(is_sidebar_link('https://doi.org/10.1234/synthetic'))
