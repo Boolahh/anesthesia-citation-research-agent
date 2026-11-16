@@ -441,9 +441,20 @@ def _parse_pages(pages, tool, question, path, api=None):
         # "More" list, left chat history and body advice are not citations.
         # This branch must bypass _plain_references() and generic links:
         # they previously produced dozens of invented candidate rows.
-        annotations, references = [], []
+        references = []
         panel = cited_sources_panel(pages)
-        found = panel if panel is not None else visible_unlinked_badges(pages)
+        if panel is not None:
+            # New Edge layout: only the explicit Citations-panel listings.
+            # Never add plain body links or the separate More suggestions.
+            annotations = []
+            found = panel
+        else:
+            # Older Copilot printouts have no right-hand citation list, but
+            # sometimes preserve a REAL medical link in the answer. Keep
+            # those links via extract_links(), which excludes Copilot app UI,
+            # and add only visible unlinked badges that do not overlap links.
+            annotations = extract_links(pages)
+            found = list(annotations) + visible_unlinked_badges(pages)
         excluded = sum(
             is_sidebar_link(link.get('uri') or '')
             for page in pages for link in page.get_links()
@@ -471,7 +482,9 @@ def _parse_pages(pages, tool, question, path, api=None):
             warnings.append(
                 f'No Sources > Citations panel captured: preserved '
                 f'{len(found)} visible inline citation badge occurrence(s), '
-                'without URLs or inferred scholarly publications.'
+                'with real embedded source links preserved where present. '
+                'Unlinked badge source URLs were NOT saved in this PDF; '
+                'never infer scholarly publications from badge labels.'
             )
         if any(re.search(r'\+\d{1,2}$', b['citation'])
                for b in (visible_unlinked_badges(pages) if panel is not None
