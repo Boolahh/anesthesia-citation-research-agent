@@ -427,7 +427,12 @@ def _parse_pages(pages, tool, question, path, api=None):
     deepseek_format = (tool == 'DSK' and any(
         re.search(r'Found\s+\d+\s+web\s+pages', p.get_text(), re.I)
         for p in pages))
+    # Copilot viewport prints can contain numbered *sidebar conversations*.
+    # Those are navigation, never citation-number geometry. Do not allow the
+    # numbered-link fallback to bypass the Copilot sidebar URI filter.
+    copilot_viewport = (tool == 'COP' and is_viewport_print(pages))
     generic_numbered = (not deepseek_format and tool not in ('CGP', 'CLG')
+                        and not copilot_viewport
                         and looks_like_numbered_link_export(pages))
     if deepseek_format or generic_numbered:
         annotations, deepseek_warnings = extract_deepseek_numbered(pages)
@@ -446,7 +451,7 @@ def _parse_pages(pages, tool, question, path, api=None):
     # Include uncaptured references, but never add the same entry once more
     # simply because its URL appears as visible text and as PDF annotation.
     found = list(annotations)
-    if tool == 'COP' and is_viewport_print(pages):
+    if copilot_viewport:
         badges = visible_unlinked_badges(pages)
         ignored = sum(is_sidebar_link(link.get('uri') or '')
                       for p in pages for link in p.get_links())
