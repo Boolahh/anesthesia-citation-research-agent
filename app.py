@@ -322,6 +322,31 @@ if result:
                 f"medical-source URLs. Do NOT interpret their source badges "
                 f"as verified publications or invented link destinations."
             )
+    elif report.get('gemini_browser_print_documents', 0):
+        st.error(
+            'INCOMPLETE GEMINI CITATION EXPORT — these browser-printed PDFs '
+            'contain Google account/app links, not original medical-source '
+            'URLs. The agent copied only explicitly visible source badges; '
+            'a provider label such as PMC - NIH is not a publication link. '
+            'Source URLs remain NR and missing research fields NOT FOUND. '
+            'Do not finalize a citation census or publication metadata '
+            'from these PDFs until the original Gemini source links are '
+            'captured and verified.'
+        )
+        if report.get('gemini_documents_with_no_visible_citations'):
+            st.warning(
+                f"{report['gemini_documents_with_no_visible_citations']} "
+                'Gemini PDF(s) had no visible source citation badges. '
+                'This is NOT proof the original response cited zero sources. '
+                'Review the full Gemini answer and any Sources panel.'
+            )
+        if report.get('gemini_source_badges_without_urls'):
+            st.info(
+                f"{report['gemini_source_badges_without_urls']} visible Gemini "
+                'badge(s) lacked the actual destination URL. Any +N source '
+                'group must be expanded in the original response; never '
+                'invent the hidden source titles or links.'
+            )
     else:
         st.success('The output is ready. Green fields are provisional until independently checked by a human reviewer.')
     st.caption('All downloads stay available after each click. Closing/reloading the browser tab can clear this temporary session.')

@@ -10,6 +10,8 @@ from collections import defaultdict
 from agent.deepseek_numbered import extract_deepseek_numbered, looks_like_numbered_link_export
 from agent.copilot_export import (is_sidebar_link, is_viewport_print,
                                   visible_unlinked_badges, cited_sources_panel)
+from agent.gemini_export import (is_gemini_interface_url, is_gemini_browser_print,
+                                 gemini_visible_source_badges)
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
@@ -432,10 +434,56 @@ def _parse_pages(pages, tool, question, path, api=None):
     # Those are navigation, never citation-number geometry. Do not allow the
     # numbered-link fallback to bypass the Copilot sidebar URI filter.
     copilot_viewport = (tool == 'COP' and is_viewport_print(pages))
+    gemini_viewport = (tool == 'GEM' and is_gemini_browser_print(pages))
     generic_numbered = (not deepseek_format and tool not in ('CGP', 'CLG')
-                        and not copilot_viewport
+                        and not copilot_viewport and not gemini_viewport
                         and looks_like_numbered_link_export(pages))
-    if copilot_viewport:
+    if gemini_viewport:
+        # Gemini print-to-PDF preserves Google app/account links, but not
+        # necessarily the source chip destinations. Never turn the browser
+        # chrome or the MYRIAD trial mention in prose into bibliographic rows.
+        # Only actually visible source chips (and URLs directly attached to
+        # those chips) are eligible as-cited evidence.
+        annotations, references = [], []
+        found = gemini_visible_source_badges(pages)
+        ignored = sum(
+            is_gemini_interface_url(link.get('uri') or '')
+            for page in pages for link in page.get_links()
+        )
+        warnings.append(
+            f'Gemini browser viewport PDF: excluded {ignored} Google '
+            'account/app navigation links (not research citations)'
+        )
+        if found:
+            warnings.append(
+                f'Gemini: preserved {len(found)} visibly printed source '
+                'badge(s) exactly as displayed. Short provider labels are '
+                'not sufficient to identify academic publications.'
+            )
+        else:
+            warnings.append(
+                'Gemini: no explicit source badges or linked scholarly '
+                'citations are visible in this PDF. Do not infer citations '
+                'from clinical narrative, named trials or guidelines; '
+                'a zero-extraction result is not proof that the original '
+                'Gemini conversation contained no citations.'
+            )
+        missing_urls = sum(not item.get('url') for item in found)
+        if missing_urls:
+            warnings.append(
+                f'Gemini: {missing_urls} source badge(s) have no embedded '
+                'original publication URLs; blue URL NR, missing green '
+                'research fields NOT FOUND. Do not guess an article from '
+                'a source label like PMC - NIH or ResearchGate.'
+            )
+        if any(item.get('evidence', {}).get('collapsed_group_unexpanded')
+               for item in found):
+            warnings.append(
+                'Gemini: +N means hidden citation links were not exported. '
+                'Do not create N additional guessed source rows; expand '
+                'the source group and capture the original links manually.'
+            )
+    elif copilot_viewport:
         # The browser printout is NOT a conventional bibliography. Its
         # "Sources > Citations" panel lists actually cited references; the
         # "More" list, left chat history and body advice are not citations.
@@ -561,14 +609,18 @@ def _parse_pages(pages, tool, question, path, api=None):
         url = entry.get('url') or 'NR'
         info = rough_fields(raw, url)
         if entry.get('kind') in ('deepseek_numbered_link',
-                                 'copilot_visible_unlinked_badge'):
+                                 'copilot_visible_unlinked_badge',
+                                 'gemini_visible_source_badge'):
             # A number/domain badge is not an article title.
             info['title'] = 'NR'
-        if entry.get('kind') == 'copilot_visible_unlinked_badge':
-            # The badge states no author/year/DOI/PMID. Never derive facts
-            # from a shortened hostname or '+1' marker.
+        if entry.get('kind') in ('copilot_visible_unlinked_badge',
+                                 'gemini_visible_source_badge'):
+            # Provider badges do not contain a publication title or author.
+            # Retain actual DOI/PMID explicitly contained in a REAL linked
+            # scholarly URL, but never invent them for an unlinked badge.
             info['authors'] = info['year'] = info['journal'] = 'NR'
-            info['doi'] = info['pmid'] = 'NR'
+            if url == 'NR':
+                info['doi'] = info['pmid'] = 'NR'
         if entry.get('kind') == 'copilot_cited_source_panel':
             # Strictly as displayed: complete visible title may be copied to
             # the original blue title, but any clipped ellipsis is NOT a

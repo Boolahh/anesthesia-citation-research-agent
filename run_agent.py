@@ -36,10 +36,11 @@ from agent.source_coverage import (geography_candidate_sources, source_access_re
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
 from agent.source_dedup import unique_question_sources, source_key
 from agent.copilot_export import is_sidebar_link
+from agent.gemini_export import is_gemini_interface_url
 from agent.strict_sources import reliable_original_identity, strict_green_values
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.4.3'
+APP_VERSION = '2.5.0'
 
 
 def write_json(path, payload):
@@ -172,7 +173,7 @@ def gather(args, workbook, ai):
             diagnostic = inspect_unresolved_pdf(path)
             inferred = diagnostic.get('question_inferred_from_filename')
             zero_message = ('Zero recoverable citations for '+inferred+
-                            '; confirm whether the Claude PDF contains sources'
+                            '; verify original AI response and PDF citation export'
                             if inferred else
                             'Zero recoverable citations; original question could not be established')
             # A failed extraction is explicitly *not* a verified zero-citation
@@ -723,6 +724,26 @@ def reject_contaminated_copilot_workbook(workbook):
             'The uploaded original workbook was not modified.')
 
 
+def reject_contaminated_gemini_workbook(workbook):
+    """Never carry old Gemini Google-account UI links into the study master."""
+    polluted = []
+    for (tool, question, order), rownum in workbook.existing.items():
+        if tool != 'GEM':
+            continue
+        source = workbook.get_row(rownum)
+        if is_gemini_interface_url(source.get('E')):
+            polluted.append((question, rownum))
+    if polluted:
+        example = ', '.join(
+            f'{question} row {rn}' for question, rn in polluted[:5])
+        raise ValueError(
+            f'Existing Excel contains {len(polluted)} invalid Gemini '
+            f'Google account/navigation links ({example}). Those are NOT '
+            'citations. Do not reuse this workbook. Start with a clean '
+            'study template and a complete original source export; the '
+            'uploaded workbook was not modified.')
+
+
 def require_single_pdf_per_question(documents):
     """Do not combine two distinct AI replies to the same study prompt."""
     groups = defaultdict(list)
@@ -772,6 +793,7 @@ def main(argv=None):
     wb = TemplateWorkbook(args.template)
     if args.command == 'run':
         reject_contaminated_copilot_workbook(wb)
+        reject_contaminated_gemini_workbook(wb)
     legacy_rows_combined = wb.compact_existing_sources() if args.command == 'run' else 0
     ai = choose_ai(args)
     if args.command == 'scan' or args.stage in ('blue', 'all'):
@@ -936,6 +958,20 @@ def main(argv=None):
             any('Copilot browser viewport PDF' in message
                 for message in doc.get('warnings') or [])
             for doc in documents),
+        'gemini_browser_print_documents': sum(
+            doc.get('tool') == 'GEM' and
+            any('Gemini browser viewport PDF' in str(message)
+                for message in doc.get('warnings') or [])
+            for doc in documents),
+        'gemini_documents_with_no_visible_citations': sum(
+            doc.get('tool') == 'GEM' and doc.get('citations') == 0 and
+            any('Gemini browser viewport PDF' in str(message)
+                for message in doc.get('warnings') or [])
+            for doc in documents),
+        'gemini_source_badges_without_urls': sum(
+            1 for citation in rows if citation.get('tool') == 'GEM'
+            and citation.get('extraction_method') == 'gemini_visible_source_badge'
+            and citation.get('url') in ('', 'NR', None)),
         'citations_extracted': len(rows),
         'unique_source_rows_added_or_revisited': len(rows),
         'total_unique_source_rows_in_workbook': len(wb.existing),
