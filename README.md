@@ -33,6 +33,55 @@ The 12 standardized questions and 16 platform definitions are read *directly* fr
 
 Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
+## Google Gemini print-to-PDF citation safety (v2.5.0)
+
+A real three-PDF Google Gemini pilot found the following:
+
+| Gemini study question | Visibly printed source badges | Clickable medical-source URLs |
+|---|---:|---:|
+| Q10 (child with URTI undergoing tonsillectomy) | 0 | 0 |
+| Q11 (volatile versus TIVA for CABG) | 2: `PMC - NIH`, `ResearchGate + 2` | 0 |
+| Q12 (elevated ICP during craniotomy) | 0 | 0 |
+
+**Every PDF preserved only two Google account/app controls as hyperlinks.**
+The clinical prose, including a named MYRIAD trial, does not itself establish
+that Gemini provided any particular article URL or a full citation.
+An unexpanded `ResearchGate + 2` source group is ONE visibly printed
+label with unseen source identities: do not create three fabricated
+publication rows or invent article identifiers.
+
+Version 2.5.0 identifies this Gemini browser-print format and **excludes
+Google interface links entirely**. It transcribes only explicitly visible
+small source badges as **unresolved original citation labels** in blue D.
+If there is no original scholarly hyperlink, blue E is `NR`, and missing
+research fields are `NOT FOUND`. It does NOT auto-match the MYRIAD
+trial or any similarly named study just because that paper exists online.
+The PDF print engine may duplicate identical text at the same exact
+coordinates; this is one badge appearance, not two sources.
+
+**Study-grade export instructions:**
+
+1. Return to the **original Gemini answer**, before generating or asking
+   for any additional references. Review the **Sources** panel or inline
+   source badges that Gemini actually provided. Not all Gemini answers
+   include sources. Related links are not necessarily as-cited publications.
+2. For every actual cited source, **open it and copy the original full URL**.
+   Expand any `+N` group. If no source links were provided, do not
+   manufacture a bibliography from the clinical advice.
+3. Preserve the original full response and its exact copied source links in
+   a text-selectable document. Optionally use Gemini **Share & export →
+   Export to Docs**, then verify and include the original URLs manually
+   if that export omitted them. Export the document as a PDF.
+4. **Open the PDF and click at least one source URL to verify it survived.**
+   Use **one complete answer per study question**, and run blue-only first.
+   Compare source rows and actual hyperlinks to Gemini before green research.
+5. If the original answer truly provided no cited source, record that after
+   manual review. A browser PDF showing zero recovered citations does not
+   itself prove the original conversation had none.
+
+Never reuse a previously generated workbook containing Google account or
+Google-app navigation links as if they were publication citations.
+
 ## Critical Copilot / Edge browser-print limitation (v2.4.3)
 
 **Copilot PDF exports are NOT guaranteed to preserve original source URLs.**
