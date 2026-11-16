@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
 
-import fitz
+import pymupdf as fitz
 
 from agent.copilot_export import is_sidebar_link, is_viewport_print, visible_unlinked_badges
 from agent.pdf_extract import parse_pdf
