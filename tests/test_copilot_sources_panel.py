@@ -26,11 +26,11 @@ TEMPLATE = ROOT / 'template' / 'AI_Citation_Bias_Extraction_Workbook.xlsx'
 
 def make_export(path, cited=None, more=None, actual_url=None):
     cited = cited or [
-        ('Fifth Consensus Guidelines for the Management o…',
+        ('Fifth Consensus Guidelines for the Management o...',
          'cdn-links.lww.com'),
         ('Perioperative medicine: evidence-based review',
          'bmj.com'),
-        ('Fifth Consensus Guidelines for the Management o…',
+        ('Fifth Consensus Guidelines for the Management o...',
          'cdn-links.lww.com'),
     ]
     more = more or [
