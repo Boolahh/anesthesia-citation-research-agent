@@ -33,6 +33,49 @@ The 12 standardized questions and 16 platform definitions are read *directly* fr
 
 Run `./run_unix.sh` in a terminal. Both launchers use a local virtual environment.
 
+## Critical Copilot / Edge browser-print limitation (v2.4.2)
+
+A real 13-PDF Copilot pilot exposed a severe print-export pitfall.
+**Edge browser screen print can preserve 18 clickable Copilot sidebar/chat
+navigation links while losing ALL medical source link destinations.** The old
+v2.4.1 parser incorrectly counted these navigation links as 216 research
+citations. Such a workbook must not be used for research or carried into a
+cumulative master spreadsheet.
+
+The corrected parser removes known Copilot UI links (`copilot.com/chat`,
+`/search`, `/library`, `/projects`, and conversation-history routes).
+If the PDF has an identifiable Copilot viewport format, it copies **only
+visible small source-badge labels**, such as `bmj`, `lww +1` or `bjaed`,
+into blue D. If the badge's actual original source URL was not embedded in
+the PDF, blue E stays `NR` and missing green research values are
+`NOT FOUND`. The `+1` indicates a collapsed group of unseen sources,
+which the agent **does not invent, count or expand**. Repeated generic
+labels without an original source URL cannot safely be assumed to be
+the same article.
+
+**For a usable full study export:**
+
+1. Open the *entire* original Copilot answer in Edge. Scroll through to the
+   end and explicitly expand all citation/source groups (`+1`, etc.).
+2. Capture each original cited source's full **actual hyperlink** from
+   Copilot's citation interface. Do not replace it with a paper you find
+   separately; that would corrupt the as-cited evidence.
+3. Create one complete text-selectable PDF per prompt containing the entire
+   answer plus all actually cited references/URLs. Pasting into a document
+   and saving as PDF is fine **only after confirming that the hyperlinks
+   survive**. Printing the visible chat viewport directly is NOT enough.
+4. Use exactly **one answer PDF per AI model/question**. If you upload two
+   different Copilot answers for Q06, the app now stops rather than mixing
+   them. Prefer files named `Q01_COP.pdf` through `Q12_COP.pdf`.
+5. First run **Copy original citations (blue)** and compare extracted labels
+   and URLs against the original. Only then run green research. The
+   missing-source warnings are not evidence of zero citations.
+
+The app rejects master workbooks containing these known fake Copilot
+navigation rows, instead of silently contaminating later AI-platform runs.
+Use a clean original template and re-import correct exports. See
+`docs/COPILOT_VIEWPORT_VALIDATION.md` for the real-PDF evidence.
+
 ## One Excel row per source per question (v2.4.0)
 
 The investigator has explicitly chosen **one source row per AI model + question**,

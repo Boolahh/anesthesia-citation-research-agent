@@ -34,10 +34,11 @@ from agent.source_coverage import (geography_candidate_sources, source_access_re
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
 from agent.source_dedup import unique_question_sources, source_key
+from agent.copilot_export import is_sidebar_link
 from agent.strict_sources import reliable_original_identity, strict_green_values
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.4.1'
+APP_VERSION = '2.4.2'
 
 
 def write_json(path, payload):
@@ -124,6 +125,7 @@ def gather(args, workbook, ai):
     if not paths:
         raise RuntimeError('No PDF files found. Upload PDFs for blue/all; for research-only, use a reviewed workbook.')
     collected, warnings, documents, known_hashes = [], [], [], {}
+    copilot_question_files = {}
     for path in paths:
         tool = file_tool(path, workbook.data.tool_names, args.tool, root)
         if not tool:
@@ -165,6 +167,17 @@ def gather(args, workbook, ai):
                               'citations': 0, 'with_urls': 0, 'pdf_sha256': digest,
                               'warnings': issues+[zero_message], 'pdf_diagnostics': diagnostic})
         for question, rows in per_question.items():
+            if tool == 'COP':
+                previous = copilot_question_files.get(question)
+                if previous and previous != path.name:
+                    raise ValueError(
+                        f'Multiple DIFFERENT Copilot responses assigned to {question}: '
+                        f'{previous!r} and {path.name!r}. Refusing to merge '
+                        'distinct answers into one study question. Choose a '
+                        'single complete response, or consolidate pages from '
+                        'that ONE response into a single PDF before rerunning.'
+                    )
+                copilot_question_files[question] = path.name
             documents.append({'file': path.name, 'tool': tool, 'question': question,
                               'citations': len(rows), 'with_urls': sum(x['url'] != 'NR' for x in rows),
                               'pdf_sha256': digest, 'warnings': issues})
@@ -669,6 +682,50 @@ def research_candidate(item, wb):
     return rownum, source, has_original_locator
 
 
+
+def reject_contaminated_copilot_workbook(workbook):
+    """Do not carry old Copilot navigation rows into a master study workbook."""
+    polluted = []
+    for (tool, question, order), rownum in workbook.existing.items():
+        if tool != 'COP':
+            continue
+        original = workbook.get_row(rownum)
+        if is_sidebar_link(original.get('E')):
+            polluted.append((question, rownum))
+    if polluted:
+        examples = ', '.join(
+            f'{question} row {rownum}' for question, rownum in polluted[:5])
+        raise ValueError(
+            f'This Excel contains {len(polluted)} invalid Copilot UI/sidebar '
+            f'links created by an older extractor ({examples}). They are '
+            'NOT publication citations. Do not reuse this workbook as a '
+            'research master. Start from the original blank study template '
+            'and re-import sources using a full export with actual links. '
+            'The uploaded original workbook was not modified.')
+
+
+def require_single_pdf_per_question(documents):
+    """Do not combine two distinct AI replies to the same study prompt."""
+    groups = defaultdict(list)
+    for doc in documents:
+        if doc.get('tool') and doc.get('question') and doc.get('file'):
+            groups[(doc['tool'], doc['question'])].append(doc['file'])
+    conflicts = [
+        (tool, question, sorted(set(paths)))
+        for (tool, question), paths in groups.items()
+        if len(set(paths)) > 1
+    ]
+    if conflicts:
+        detail = '; '.join(
+            f'{tool}/{question}: {", ".join(paths)}'
+            for tool, question, paths in sorted(conflicts))
+        raise ValueError(
+            'More than one PDF response maps to the same AI platform and '
+            f'study question: {detail}. Select exactly ONE answer per '
+            'platform/question before running extraction. The agent will '
+            'not silently combine different answers into one study record.')
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='AI citation evidence pipeline: original PDFs to research workbook')
     ap.add_argument('command', choices=['scan', 'run'])
@@ -694,10 +751,14 @@ def main(argv=None):
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     wb = TemplateWorkbook(args.template)
+    if args.command == 'run':
+        reject_contaminated_copilot_workbook(wb)
     legacy_rows_combined = wb.compact_existing_sources() if args.command == 'run' else 0
     ai = choose_ai(args)
     if args.command == 'scan' or args.stage in ('blue', 'all'):
         appearances, documents, warnings = gather(args, wb, ai)
+        if args.command == 'run':
+            require_single_pdf_per_question(documents)
         rows = unique_question_sources(appearances)
     else:
         # Research-only resumes from an edited/reviewed workbook, with no PDFs.
@@ -850,7 +911,13 @@ def main(argv=None):
         'elapsed_seconds': round(time.monotonic() - run_started, 2),
         'extraction_seconds': extraction_seconds,
         'research_seconds': research_seconds,
-        'input_documents': documents, 'citations_extracted': len(rows),
+        'input_documents': documents,
+        'copilot_viewport_exports_incomplete': sum(
+            doc.get('tool') == 'COP' and
+            any('Copilot browser viewport PDF' in message
+                for message in doc.get('warnings') or [])
+            for doc in documents),
+        'citations_extracted': len(rows),
         'unique_source_rows_added_or_revisited': len(rows),
         'total_unique_source_rows_in_workbook': len(wb.existing),
         'citation_appearances_extracted': len(appearances),
@@ -862,6 +929,17 @@ def main(argv=None):
             bool((doc.get('pdf_diagnostics') or {}).get('possible_image_only_export'))
             for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
+        'citations_without_original_source_url': sum(
+            item['url'] in ('', 'NR') for item in rows),
+        'copilot_incomplete_viewport_documents': sum(
+            any('Copilot browser viewport PDF:' in str(issue)
+                for issue in doc.get('warnings', []))
+            for doc in documents),
+        'copilot_incomplete_viewport_without_citation_urls': sum(
+            (doc.get('with_urls') or 0) == 0 and
+            any('Copilot browser viewport PDF:' in str(issue)
+                for issue in doc.get('warnings', []))
+            for doc in documents),
         'distinct_sources_within_questions': len(source_level),
         'distinct_linked_sources_within_questions': sum(
             row['distinct_linked_source_identities'] for row in citation_census),
@@ -869,6 +947,7 @@ def main(argv=None):
             row['bibliography_distinct_sources'] for row in citation_census),
         'citation_counting_method': 'one distinct linked source per model and question in Excel; keep raw appearances in audit exports',
         'source_identification_policy': 'strict authoritative link-to-record evidence; unresolved green fields NOT FOUND',
+        'copilot_ui_navigation_excluded': True,
         'speculative_title_search_enabled': False,
         'sources_passing_strict_identity': sum(p.get('strict_source_identified') is True for p in research),
         'sources_not_independently_identified': sum(p.get('strict_source_identified') is False for p in research),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from agent.deepseek_numbered import extract_deepseek_numbered, looks_like_numbered_link_export
+from agent.copilot_export import is_sidebar_link, is_viewport_print, visible_unlinked_badges
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, parse_qsl, urlencode
 import hashlib
@@ -201,7 +202,8 @@ def extract_links(pages):
         annotations = []
         for a in page.get_links():
             uri = (a.get('uri') or '').strip()
-            if uri.lower().startswith(('https://', 'http://')):
+            if (uri.lower().startswith(('https://', 'http://'))
+                    and not is_sidebar_link(uri)):
                 annotations.append((uri, fitz.Rect(a['from'])))
         by_url = defaultdict(list)
         for uri, rect in annotations:
@@ -425,7 +427,12 @@ def _parse_pages(pages, tool, question, path, api=None):
     deepseek_format = (tool == 'DSK' and any(
         re.search(r'Found\s+\d+\s+web\s+pages', p.get_text(), re.I)
         for p in pages))
+    # Copilot viewport prints can contain numbered *sidebar conversations*.
+    # Those are navigation, never citation-number geometry. Do not allow the
+    # numbered-link fallback to bypass the Copilot sidebar URI filter.
+    copilot_viewport = (tool == 'COP' and is_viewport_print(pages))
     generic_numbered = (not deepseek_format and tool not in ('CGP', 'CLG')
+                        and not copilot_viewport
                         and looks_like_numbered_link_export(pages))
     if deepseek_format or generic_numbered:
         annotations, deepseek_warnings = extract_deepseek_numbered(pages)
@@ -444,6 +451,33 @@ def _parse_pages(pages, tool, question, path, api=None):
     # Include uncaptured references, but never add the same entry once more
     # simply because its URL appears as visible text and as PDF annotation.
     found = list(annotations)
+    if copilot_viewport:
+        badges = visible_unlinked_badges(pages)
+        ignored = sum(is_sidebar_link(link.get('uri') or '')
+                      for p in pages for link in p.get_links())
+        warnings.append(
+            f'Copilot browser viewport PDF: excluded {ignored} sidebar/chat '
+            'navigation links (NOT cited medical sources)'
+        )
+        if badges:
+            warnings.append(
+                f'Preserved {len(badges)} explicitly visible Copilot source '
+                'badge occurrence(s), but their destination URLs were NOT '
+                'saved in the PDF; kept as-cited labels with URL NR and '
+                'research fields NOT FOUND'
+            )
+        if any(re.search(r'\+\d{1,2}$', b['citation']) for b in badges):
+            warnings.append(
+                'Collapsed Copilot +N source badges indicate unseen extra '
+                'references. Do not count or invent those unexpanded sources; '
+                'open the original source list and capture actual URLs.'
+            )
+        warnings.append(
+            'This is a one-page/screen-viewport Copilot print capture, not '
+            'proof that the whole response or all source citations are present. '
+            'Export the complete answer with original clickable source URLs.'
+        )
+        found.extend(badges)
     for ref in references:
         matches = [a for a in annotations if _matches_reference(a, ref)]
         if matches:
@@ -490,9 +524,15 @@ def _parse_pages(pages, tool, question, path, api=None):
         raw = flatten_text(entry.get('citation', ''))
         url = entry.get('url') or 'NR'
         info = rough_fields(raw, url)
-        if entry.get('kind') == 'deepseek_numbered_link':
-            # A number is an as-cited marker, never an article title.
+        if entry.get('kind') in ('deepseek_numbered_link',
+                                 'copilot_visible_unlinked_badge'):
+            # A number/domain badge is not an article title.
             info['title'] = 'NR'
+        if entry.get('kind') == 'copilot_visible_unlinked_badge':
+            # The badge states no author/year/DOI/PMID. Never derive facts
+            # from a shortened hostname or '+1' marker.
+            info['authors'] = info['year'] = info['journal'] = 'NR'
+            info['doi'] = info['pmid'] = 'NR'
         identity = citation_identity({**info, 'url': url})
         repeated = 'Y' if identity in seen else 'N'
         seen.add(identity)
