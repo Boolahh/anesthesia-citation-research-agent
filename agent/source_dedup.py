@@ -18,6 +18,18 @@ def source_key(item):
     # source. The URL is the common original evidence; publication identity
     # conflicts are left to the reviewer, never silently adjudicated.
     url = str(item.get('url') or '')
+    label = str(item.get('citation') or '')
+    # Two identical *truncated* Copilot sidebar titles/domains are not proof
+    # of one publication. They may be two different records clipped to the
+    # same prefix. Retain separately until actual original URLs are obtained.
+    if (url in ('', 'NR', 'NOT FOUND') and
+            ('…' in label or '...' in label) and
+            ('source_context' in item and
+             item['source_context'] == 'copilot_citations_panel'
+             or ' — ' in label)):
+        return ('copilot-clipped-candidate:' +
+                str(item.get('order') or item.get('excel_row') or '') +
+                ':' + citation_identity({'citation': label}))
     key = (citation_identity({'url': url, 'citation': ''})
            if url not in ('', 'NR', 'NOT FOUND') else citation_identity(item))
     if key.startswith('text:'):
