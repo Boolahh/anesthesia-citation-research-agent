@@ -615,10 +615,12 @@ def _parse_pages(pages, tool, question, path, api=None):
             info['title'] = 'NR'
         if entry.get('kind') in ('copilot_visible_unlinked_badge',
                                  'gemini_visible_source_badge'):
-            # The badge states no author/year/DOI/PMID. Never derive facts
-            # from a shortened hostname or '+1' marker.
+            # Provider badges do not contain a publication title or author.
+            # Retain actual DOI/PMID explicitly contained in a REAL linked
+            # scholarly URL, but never invent them for an unlinked badge.
             info['authors'] = info['year'] = info['journal'] = 'NR'
-            info['doi'] = info['pmid'] = 'NR'
+            if url == 'NR':
+                info['doi'] = info['pmid'] = 'NR'
         if entry.get('kind') == 'copilot_cited_source_panel':
             # Strictly as displayed: complete visible title may be copied to
             # the original blue title, but any clipped ellipsis is NOT a
