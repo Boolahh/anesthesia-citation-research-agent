@@ -911,6 +911,17 @@ def main(argv=None):
             bool((doc.get('pdf_diagnostics') or {}).get('possible_image_only_export'))
             for doc in documents),
         'citations_with_urls': sum(item['url'] not in ('', 'NR') for item in rows),
+        'citations_without_original_source_url': sum(
+            item['url'] in ('', 'NR') for item in rows),
+        'copilot_incomplete_viewport_documents': sum(
+            any('Copilot browser viewport PDF:' in str(issue)
+                for issue in doc.get('warnings', []))
+            for doc in documents),
+        'copilot_incomplete_viewport_without_citation_urls': sum(
+            (doc.get('with_urls') or 0) == 0 and
+            any('Copilot browser viewport PDF:' in str(issue)
+                for issue in doc.get('warnings', []))
+            for doc in documents),
         'distinct_sources_within_questions': len(source_level),
         'distinct_linked_sources_within_questions': sum(
             row['distinct_linked_source_identities'] for row in citation_census),
