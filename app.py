@@ -306,7 +306,24 @@ result = st.session_state.get('latest_result')
 if result:
     report = result['report']
     st.subheader('Latest run — results and review')
-    st.success('The output is ready. Green fields are provisional until independently checked by a human reviewer.')
+    if report.get('copilot_incomplete_viewport_documents', 0):
+        st.error(
+            'INCOMPLETE COPILOT EXPORT — this PDF captured a browser screen '
+            'and did NOT retain all actual source URLs. Only explicitly visible '
+            'source badges have been transcribed with URL NR. A +N marker '
+            'represents hidden citations that cannot be recovered from this '
+            'file. This workbook is NOT a complete research dataset. '
+            'Export the full answer and expand source links before final study use.'
+        )
+        if report.get('copilot_incomplete_viewport_without_citation_urls'):
+            st.warning(
+                f"{report['copilot_incomplete_viewport_without_citation_urls']} "
+                f"Copilot viewport document(s) had no usable original "
+                f"medical-source URLs. Do NOT interpret their source badges "
+                f"as verified publications or invented link destinations."
+            )
+    else:
+        st.success('The output is ready. Green fields are provisional until independently checked by a human reviewer.')
     st.caption('All downloads stay available after each click. Closing/reloading the browser tab can clear this temporary session.')
     cols = st.columns(5)
     for i, (title, value) in enumerate((
