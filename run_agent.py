@@ -34,10 +34,11 @@ from agent.source_coverage import (geography_candidate_sources, source_access_re
                                    GEO_SOURCE_FIELDS, ACCESS_REVIEW_FIELDS)
 from agent.citation_census import citation_census_by_question, CITATION_CENSUS_FIELDS
 from agent.source_dedup import unique_question_sources, source_key
+from agent.copilot_export import is_sidebar_link
 from agent.strict_sources import reliable_original_identity, strict_green_values
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = '2.4.1'
+APP_VERSION = '2.4.2'
 
 
 def write_json(path, payload):
@@ -669,6 +670,50 @@ def research_candidate(item, wb):
     return rownum, source, has_original_locator
 
 
+
+def reject_contaminated_copilot_workbook(workbook):
+    """Do not carry old Copilot navigation rows into a master study workbook."""
+    polluted = []
+    for (tool, question, order), rownum in workbook.existing.items():
+        if tool != 'COP':
+            continue
+        original = workbook.get_row(rownum)
+        if is_sidebar_link(original.get('E')):
+            polluted.append((question, rownum))
+    if polluted:
+        examples = ', '.join(
+            f'{question} row {rownum}' for question, rownum in polluted[:5])
+        raise ValueError(
+            f'This Excel contains {len(polluted)} invalid Copilot UI/sidebar '
+            f'links created by an older extractor ({examples}). They are '
+            'NOT publication citations. Do not reuse this workbook as a '
+            'research master. Start from the original blank study template '
+            'and re-import sources using a full export with actual links. '
+            'The uploaded original workbook was not modified.')
+
+
+def require_single_pdf_per_question(documents):
+    """Do not combine two distinct AI replies to the same study prompt."""
+    groups = defaultdict(list)
+    for doc in documents:
+        if doc.get('tool') and doc.get('question') and doc.get('file'):
+            groups[(doc['tool'], doc['question'])].append(doc['file'])
+    conflicts = [
+        (tool, question, sorted(set(paths)))
+        for (tool, question), paths in groups.items()
+        if len(set(paths)) > 1
+    ]
+    if conflicts:
+        detail = '; '.join(
+            f'{tool}/{question}: {", ".join(paths)}'
+            for tool, question, paths in sorted(conflicts))
+        raise ValueError(
+            'More than one PDF response maps to the same AI platform and '
+            f'study question: {detail}. Select exactly ONE answer per '
+            'platform/question before running extraction. The agent will '
+            'not silently combine different answers into one study record.')
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='AI citation evidence pipeline: original PDFs to research workbook')
     ap.add_argument('command', choices=['scan', 'run'])
@@ -694,10 +739,14 @@ def main(argv=None):
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     wb = TemplateWorkbook(args.template)
+    if args.command == 'run':
+        reject_contaminated_copilot_workbook(wb)
     legacy_rows_combined = wb.compact_existing_sources() if args.command == 'run' else 0
     ai = choose_ai(args)
     if args.command == 'scan' or args.stage in ('blue', 'all'):
         appearances, documents, warnings = gather(args, wb, ai)
+        if args.command == 'run':
+            require_single_pdf_per_question(documents)
         rows = unique_question_sources(appearances)
     else:
         # Research-only resumes from an edited/reviewed workbook, with no PDFs.
@@ -869,6 +918,7 @@ def main(argv=None):
             row['bibliography_distinct_sources'] for row in citation_census),
         'citation_counting_method': 'one distinct linked source per model and question in Excel; keep raw appearances in audit exports',
         'source_identification_policy': 'strict authoritative link-to-record evidence; unresolved green fields NOT FOUND',
+        'copilot_ui_navigation_excluded': True,
         'speculative_title_search_enabled': False,
         'sources_passing_strict_identity': sum(p.get('strict_source_identified') is True for p in research),
         'sources_not_independently_identified': sum(p.get('strict_source_identified') is False for p in research),
